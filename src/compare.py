@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from itertools import product
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -28,11 +29,27 @@ from data import get_spectrograms
 # ---------------------------------------------------------------------------
 
 class Adapter(ABC):
-    """One-class adapter: fit on target embeddings, score new ones."""
+    """One-class adapter: fit on target embeddings, score new ones.
+
+    Each adapter receives ALL available embeddings and must use only the
+    first self.train_n of them — simulating the on-device budget.
+    The adapter is responsible for any internal train/val split from
+    that budget (e.g. for threshold calibration).
+    """
+
+    def __init__(self, train_n: int = None):
+        self.train_n = train_n
+        self.threshold = None
 
     @abstractmethod
-    def fit(self, train_emb: np.ndarray, val_emb: np.ndarray):
-        """Train on target-class embeddings. Sets self.threshold."""
+    def fit(self, emb: np.ndarray):
+        """Fit on at most self.train_n samples. Sets self.threshold."""
+
+    def _get_budget(self, emb: np.ndarray) -> np.ndarray:
+        """Return the on-device budget: first train_n samples."""
+        if self.train_n is not None:
+            return emb[:self.train_n]
+        return emb
 
     @abstractmethod
     def score(self, emb: np.ndarray) -> np.ndarray:
@@ -48,16 +65,21 @@ class Adapter(ABC):
 
 class AutoencoderAdapter(Adapter):
     def __init__(self, input_dim=32, hidden_dim=16, latent_dim=8,
-                 lr=1e-3, epochs=2000, device="cpu"):
+                 lr=1e-3, epochs=2000, val_frac=0.25, device="cpu", train_n=None):
+        super().__init__(train_n)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.lr = lr
         self.epochs = epochs
+        self.val_frac = val_frac
         self.device = device
-        self.threshold = None
 
-    def fit(self, train_emb: np.ndarray, val_emb: np.ndarray):
+    def fit(self, emb: np.ndarray):
+        budget = self._get_budget(emb)
+        split = max(1, int(len(budget) * (1 - self.val_frac)))
+        train_emb, val_emb = budget[:split], budget[split:]
+
         model = SpeechAutoencoder(self.input_dim, self.hidden_dim, self.latent_dim).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
@@ -90,21 +112,23 @@ class AutoencoderAdapter(Adapter):
 # ---------------------------------------------------------------------------
 
 class GMMAdapter(Adapter):
-    def __init__(self, n_components=3, covariance_type="full"):
+    def __init__(self, n_components=3, covariance_type="full", train_n=None):
+        super().__init__(train_n)
         self.n_components = n_components
         self.covariance_type = covariance_type
-        self.threshold = None
 
-    def fit(self, train_emb: np.ndarray, val_emb: np.ndarray):
+    def fit(self, emb: np.ndarray):
+        budget = self._get_budget(emb)
+
         self._gmm = GaussianMixture(
             n_components=self.n_components,
             covariance_type=self.covariance_type,
             random_state=42,
         )
-        self._gmm.fit(train_emb)
+        self._gmm.fit(budget)
 
-        val_scores = self.score(val_emb)
-        self.threshold = float(np.percentile(val_scores, 95))
+        train_scores = self.score(budget)
+        self.threshold = float(np.percentile(train_scores, 95))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Negative log-likelihood: higher = more anomalous
@@ -142,55 +166,74 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     }
 
 
-def print_results(results: dict[str, dict]):
-    """Pretty-print comparison table."""
-    max_name = max(len(n) for n in results) + 2
-    header = f"{'Adapter':<{max_name}} {'Recall':>8} {'FAR':>8} {'Acc':>8} {'AUC':>8} {'Thresh':>10}"
-    print("-" * len(header))
-    print(header)
-    print("-" * len(header))
-    for name, m in results.items():
-        print(f"{name:<{max_name}} {m['recall']:>8.2%} {m['false_alarm_rate']:>8.2%} "
-              f"{m['accuracy']:>8.2%} {m['auc']:>8.4f} {m['threshold']:>10.6f}")
-    print("-" * len(header))
 
 
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
-def plot_sweep(results: dict, x: str, y: str, group_by: str = None, filter: str = None):
-    """Plot sweep results with x and y from params/metrics, grouped into lines.
+def plot_sweep(df: pd.DataFrame, x: str, y: str, group_by: str = None,
+               filter: str = None, where: dict = None):
+    """Plot sweep results with x and y as column names, grouped into lines.
 
     Args:
-        results  : output of the fit loop (includes _class and _params)
-        x        : param name for the x-axis  (e.g. "n_components")
-        y        : metric name for the y-axis  (e.g. "auc", "recall")
-        group_by : param name for separate lines (e.g. "covariance_type")
-        filter   : if set, only plot entries where _class == filter
+        df       : results DataFrame from main()
+        x        : column name for the x-axis  (e.g. "n_components")
+        y        : column name for the y-axis   (e.g. "auc", "recall")
+        group_by : column name for separate lines (e.g. "covariance_type")
+        filter   : if set, only plot rows where adapter == this name
+        where    : extra column filters, e.g. {"covariance_type": "diag"}
     """
-    rows = [m for m in results.values()
-            if filter is None or m["_class"] == filter]
-
-    # Group rows by the group_by param value (or single group if None)
-    groups: dict[str, list] = {}
-    for m in rows:
-        key = str(m["_params"].get(group_by, "all")) if group_by else "all"
-        groups.setdefault(key, []).append(m)
+    subset = df.copy()
+    if filter:
+        subset = subset[subset["adapter"] == filter]
+    if where:
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
 
     fig, ax = plt.subplots()
-    for label, entries in groups.items():
-        entries.sort(key=lambda m: m["_params"].get(x, 0))
-        xs = [e["_params"][x] for e in entries]
-        ys = [e[y] for e in entries]
-        ax.plot(xs, ys, marker="o", label=label)
+    if group_by:
+        for label, group in subset.groupby(group_by):
+            group = group.sort_values(x)
+            ax.plot(group[x], group[y], marker="o", label=label)
+    else:
+        subset = subset.sort_values(x)
+        ax.plot(subset[x], subset[y], marker="o")
 
     ax.set_xlabel(x)
     ax.set_ylabel(y)
     title = f"{filter or 'all'}: {y} vs {x}"
     if group_by:
         title += f" (grouped by {group_by})"
+    if where:
+        title += f" [{', '.join(f'{k}={v}' for k, v in where.items())}]"
     ax.set_title(title)
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_lines(df: pd.DataFrame, x: str, y: str,
+               lines: list[tuple[str, dict]]):
+    """Plot specific configs as named lines on one figure.
+
+    Args:
+        df    : results DataFrame
+        x     : column for x-axis (e.g. "train_n")
+        y     : column for y-axis (e.g. "auc")
+        lines : list of (label, filter_dict) pairs — each becomes one line
+    """
+    fig, ax = plt.subplots()
+    for label, where in lines:
+        subset = df.copy()
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
+        subset = subset.sort_values(x)
+        ax.plot(subset[x], subset[y], marker="o", label=label)
+
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    ax.set_title(f"{y} vs {x}")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -220,31 +263,15 @@ def sweep(adapter_class: type, param_grid: dict) -> list[tuple[str, dict]]:
 
 def main():
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
-    TRAIN_N = 48
-    VAL_N = 16
     TEST_N = 500
 
-    # --- Extract embeddings (done once, shared by all adapters) ---
-    extractor = SpeechExtractorModule.load_from_checkpoint("best.ckpt")
-    extractor.to(DEVICE).eval()
-
-    print("Extracting training embeddings...")
-    specs = get_spectrograms("./data", target_class="yes", n=TRAIN_N + VAL_N).to(DEVICE)
-    with torch.no_grad():
-        emb = extractor(specs, return_embedding=True).cpu().numpy()
-    train_emb, val_emb = emb[:TRAIN_N], emb[TRAIN_N:]
-
-    print("Extracting test embeddings...")
-    specs_yes = get_spectrograms("./data", target_class="yes", n=TEST_N, subset="testing").to(DEVICE)
-    specs_no = get_spectrograms("./data", target_class="no", n=TEST_N, subset="testing").to(DEVICE)
-    with torch.no_grad():
-        test_target = extractor(specs_yes, return_embedding=True).cpu().numpy()
-        test_other = extractor(specs_no, return_embedding=True).cpu().numpy()
-
     # =================================================================
-    # SWEEP CONFIG — edit these to control what gets compared
+    # SWEEP CONFIG
     #
-    # Two ways to add adapters:
+    # train_sizes : list of training set sizes to sweep over
+    #               (embeddings are extracted once for the max size)
+    #
+    # Adapter configs — two ways to add:
     #
     # 1. Single config (name, AdapterClass, kwargs):
     #        ("Autoencoder", AutoencoderAdapter, {"device": DEVICE})
@@ -256,44 +283,70 @@ def main():
     #        })
     #    This produces 6 entries: n=1/full, n=1/diag, n=3/full, ...
     # =================================================================
+    TRAIN_N = 64
+
+    train_n = [10, 15, 20, 25, 30, 40, 50, 100]
+
     configs = [
-        ("Autoencoder", AutoencoderAdapter, {"device": DEVICE}),
+        *sweep(AutoencoderAdapter, {
+            "train_n": train_n,
+            "epochs": [100],
+            "device": [DEVICE],
+        }),
 
         *sweep(GMMAdapter, {
+            "train_n": train_n,
             "n_components": [1, 2],
-            "covariance_type": ["full", "diag", "spherical"],
+            "covariance_type": ["full", "diag"],
         }),
     ]
 
+    # --- Extract embeddings once (enough for the largest train_n + val) ---
+    extractor = SpeechExtractorModule.load_from_checkpoint("best.ckpt")
+    extractor.to(DEVICE).eval()
+
+    print("Extracting training embeddings...")
+    specs = get_spectrograms("./data", target_class="yes", n=TRAIN_N).to(DEVICE)
+    with torch.no_grad():
+        train_emb = extractor(specs, return_embedding=True).cpu().numpy()
+
+    print("Extracting test embeddings...")
+    specs_yes = get_spectrograms("./data", target_class="yes", n=TEST_N, subset="testing").to(DEVICE)
+    specs_no = get_spectrograms("./data", target_class="no", n=TEST_N, subset="testing").to(DEVICE)
+    with torch.no_grad():
+        test_target = extractor(specs_yes, return_embedding=True).cpu().numpy()
+        test_other = extractor(specs_no, return_embedding=True).cpu().numpy()
+
     # --- Fit and evaluate ---
-    results = {}
+    rows = []
     for name, cls, kwargs in configs:
         print(f"  {name}...")
         adapter = cls(**kwargs)
-        adapter.fit(train_emb, val_emb)
-        results[name] = {
-            **evaluate(adapter, test_target, test_other),
-            "_class": cls.__name__,
-            "_params": kwargs,
-        }
+        adapter.fit(train_emb)
+        rows.append({"adapter": cls.__name__, **kwargs, **evaluate(adapter, test_target, test_other)})
 
+    df = pd.DataFrame(rows)
     print()
-    print_results(results)
+    print(df.to_string(index=False))
 
     # =================================================================
-    # PLOTS — edit x, y, and group_by to explore different views
+    # PLOTS
     #
-    # x        : param name to put on the x-axis
-    # y        : metric name for the y-axis
-    #            (recall, false_alarm_rate, accuracy, auc, threshold)
-    # group_by : param name whose values become separate lines
-    #            (if None, each config gets its own line)
-    # filter   : only include entries where _class == this name
+    # plot_sweep: one group_by column becomes separate lines
+    # plot_lines: pick exact configs as named lines on one plot
+    #
+    # Each line is (label, filter_dict) where filter_dict matches columns.
     # =================================================================
-    # plot_sweep(results, filter="GMMAdapter", x="n_components", y="auc",       group_by="covariance_type")
-    # plot_sweep(results, filter="GMMAdapter", x="n_components", y="recall",     group_by="covariance_type")
-    # plot_sweep(results, filter="GMMAdapter", x="n_components", y="false_alarm_rate", group_by="covariance_type")
-    # plt.show()
+    lines = [
+        ("AE epochs=2000",   {"adapter": "AutoencoderAdapter", "epochs": 100}),
+        ("GMM diag n=1",     {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "diag"}),
+        ("GMM diag n=2",     {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "diag"}),
+    ]
+    plot_lines(df, x="train_n", y="accuracy",  lines=lines)
+    plot_lines(df, x="train_n", y="auc",       lines=lines)
+    plt.show()
+
+    return df
 
 
 if __name__ == "__main__":
