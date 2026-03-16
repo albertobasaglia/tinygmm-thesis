@@ -2,11 +2,10 @@
 Comparison framework for one-class adapters (autoencoder, GMM, ...).
 
 Usage:
-    cd src
-    python -m compare
+    python -m src.compare
 
 Edit CHECKPOINTS and make_configs() to control what gets compared.
-Edit the PLOTS section to control what gets visualised.
+Results are saved as a Parquet file in results/.
 """
 
 from pathlib import Path
@@ -14,7 +13,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from lib.models import SpeechExtractorModule
 from lib.data import get_spectrograms
@@ -22,17 +20,6 @@ from lib.data import get_spectrograms
 from .adapters import AutoencoderAdapter, GMMAdapter, KNNAdapter
 from .metrics import evaluate
 from .sweep import sweep
-from .plots import (
-    plot_lines,
-    plot_sweep,
-    plot_far_recall,
-    plot_eer,
-    plot_auc_auprc,
-    plot_precision_recall_bar,
-    plot_f1,
-    plot_eer_by_dim,
-    plot_eer_train_n_by_dim,
-)
 
 
 def main():
@@ -137,53 +124,12 @@ def main():
     print()
     print(df.to_string(index=False))
 
-    # =================================================================
-    # PLOTS — Hyperparameter selection per adapter, then final comparison
-    # =================================================================
-
-    # --- 1. Best Autoencoder (16 vs 32) ---
-    ae_lines = [
-        ("AE dim=32", {"p_adapter": "AutoencoderAdapter", "p_embedding_dim": 32}),
-        ("AE dim=16", {"p_adapter": "AutoencoderAdapter", "p_embedding_dim": 16}),
-    ]
-    plot_eer(df, lines=ae_lines)
-    plot_lines(df, x="p_train_n", y="m_auc", lines=ae_lines)
-
-    # --- 2. Best GMM (n_components × covariance_type × dim) ---
-    gmm_lines = [
-        ("diag n=1 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag", "p_embedding_dim": 32}),
-        ("diag n=2 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "diag", "p_embedding_dim": 32}),
-        ("full n=1 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "full", "p_embedding_dim": 32}),
-        ("full n=2 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "full", "p_embedding_dim": 32}),
-        ("diag n=1 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag", "p_embedding_dim": 16}),
-        ("diag n=2 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "diag", "p_embedding_dim": 16}),
-        ("full n=1 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "full", "p_embedding_dim": 16}),
-        ("full n=2 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "full", "p_embedding_dim": 16}),
-    ]
-    plot_eer(df, lines=gmm_lines)
-    plot_lines(df, x="p_train_n", y="m_auc", lines=gmm_lines)
-
-    # --- 3. Best KNN (k × dim) ---
-    knn_lines = [
-        ("k=1 dim=32", {"p_adapter": "KNNAdapter", "p_k": 1, "p_embedding_dim": 32}),
-        ("k=3 dim=32", {"p_adapter": "KNNAdapter", "p_k": 3, "p_embedding_dim": 32}),
-        ("k=5 dim=32", {"p_adapter": "KNNAdapter", "p_k": 5, "p_embedding_dim": 32}),
-        ("k=1 dim=16", {"p_adapter": "KNNAdapter", "p_k": 1, "p_embedding_dim": 16}),
-        ("k=3 dim=16", {"p_adapter": "KNNAdapter", "p_k": 3, "p_embedding_dim": 16}),
-        ("k=5 dim=16", {"p_adapter": "KNNAdapter", "p_k": 5, "p_embedding_dim": 16}),
-    ]
-    plot_eer(df, lines=knn_lines)
-    plot_lines(df, x="p_train_n", y="m_auc", lines=knn_lines)
-
-    # --- 4. Final comparison: best from each adapter ---
-    # (update these filters after inspecting plots 1-3)
-    # plot_eer(df, lines=[
-    #     ("AE",  {"p_adapter": "AutoencoderAdapter", "p_embedding_dim": ...}),
-    #     ("GMM", {"p_adapter": "GMMAdapter", "p_n_components": ..., "p_covariance_type": "...", "p_embedding_dim": ...}),
-    #     ("KNN", {"p_adapter": "KNNAdapter", "p_k": ..., "p_embedding_dim": ...}),
-    # ])
-
-    plt.show()
+    # --- Save results ---
+    results_dir = ROOT / "results"
+    results_dir.mkdir(exist_ok=True)
+    out_path = results_dir / "sweep.parquet"
+    df.to_parquet(out_path, index=False)
+    print(f"\nSaved {len(df)} rows to {out_path}")
 
     return df
 
