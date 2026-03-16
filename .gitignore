@@ -179,5 +179,7 @@ data/
 
 .DS_Store
 
+*.ckpt
+
 lightning_logs/
 logs/
