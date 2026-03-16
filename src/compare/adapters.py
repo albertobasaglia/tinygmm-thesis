@@ -97,7 +97,7 @@ class GMMAdapter(Adapter):
         self._gmm = GaussianMixture(
             n_components=self.n_components,
             covariance_type=self.covariance_type,
-            random_state=42,
+            reg_covar=1e-4,
         )
         self._gmm.fit(budget)
 

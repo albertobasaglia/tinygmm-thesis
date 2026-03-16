@@ -11,6 +11,7 @@ Edit the PLOTS section to control what gets visualised.
 
 from pathlib import Path
 
+import numpy as np
 import torch
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -37,6 +38,7 @@ from .plots import (
 def main():
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
+    N_TRIALS = 10
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
@@ -117,16 +119,22 @@ def main():
             test_target = extractor(specs_yes.to(DEVICE),   return_embedding=True).cpu().numpy()
             test_other  = extractor(specs_no.to(DEVICE),    return_embedding=True).cpu().numpy()
 
-        for name, cls, kwargs in make_configs(embedding_dim):
-            print(f"  {name}...")
-            adapter = cls(**kwargs)
-            adapter.fit(train_emb)
-            rows.append({
-                "embedding_dim": embedding_dim,
-                "adapter": cls.__name__,
-                **kwargs,
-                **evaluate(adapter, test_target, test_other),
-            })
+        for trial in range(N_TRIALS):
+            rng = np.random.default_rng(seed=trial)
+            shuffled_emb = rng.permutation(train_emb)
+
+            for name, cls, kwargs in make_configs(embedding_dim):
+                if trial == 0:
+                    print(f"  {name}...")
+                adapter = cls(**kwargs)
+                adapter.fit(shuffled_emb)
+                rows.append({
+                    "trial": trial,
+                    "embedding_dim": embedding_dim,
+                    "adapter": cls.__name__,
+                    **kwargs,
+                    **evaluate(adapter, test_target, test_other),
+                })
 
     df = pd.DataFrame(rows)
     print()

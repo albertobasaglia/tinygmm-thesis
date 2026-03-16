@@ -3,6 +3,27 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
+def _filter(df: pd.DataFrame, where: dict) -> pd.DataFrame:
+    subset = df.copy()
+    for k, v in where.items():
+        subset = subset[subset[k] == v]
+    return subset
+
+
+def _agg(df: pd.DataFrame, x: str, y: str) -> pd.DataFrame:
+    """Group by x, compute mean and std of y (handles single-trial data)."""
+    return df.groupby(x)[y].agg(["mean", "std"]).reset_index().sort_values(x)
+
+
+def _plot_line(ax, subset: pd.DataFrame, x: str, y: str, label: str, **kwargs):
+    """Plot mean line with ±1 std shaded band."""
+    agg = _agg(subset, x, y)
+    line, = ax.plot(agg[x], agg["mean"], marker="o", label=label, **kwargs)
+    if agg["std"].notna().any():
+        ax.fill_between(agg[x], agg["mean"] - agg["std"], agg["mean"] + agg["std"],
+                         alpha=0.15, color=line.get_color())
+
+
 def plot_far_recall(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """Scatter plot of operating points in FAR vs Recall space.
 
@@ -44,11 +65,7 @@ def plot_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        subset = df.copy()
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
-        subset = subset.sort_values("train_n")
-        ax.plot(subset["train_n"], subset["eer"], marker="o", label=label)
+        _plot_line(ax, _filter(df, where), "train_n", "eer", label)
 
     ax.set_xlabel("train_n")
     ax.set_ylabel("EER")
@@ -73,13 +90,10 @@ def plot_auc_auprc(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     colors = [p["color"] for p in prop_cycle]
 
     for i, (label, where) in enumerate(lines):
-        subset = df.copy()
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
-        subset = subset.sort_values("train_n")
+        subset = _filter(df, where)
         c = colors[i % len(colors)]
-        ax.plot(subset["train_n"], subset["auc"],   color=c, linestyle="-",  marker="o", label=f"{label} AUC-ROC")
-        ax.plot(subset["train_n"], subset["auprc"], color=c, linestyle="--", marker="s", label=f"{label} AUPRC")
+        _plot_line(ax, subset, "train_n", "auc",   f"{label} AUC-ROC", color=c, linestyle="-")
+        _plot_line(ax, subset, "train_n", "auprc", f"{label} AUPRC",   color=c, linestyle="--")
 
     ax.set_xlabel("train_n")
     ax.set_ylabel("Score")
@@ -143,11 +157,7 @@ def plot_f1(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        subset = df.copy()
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
-        subset = subset.sort_values("train_n")
-        ax.plot(subset["train_n"], subset["f1"], marker="o", label=label)
+        _plot_line(ax, _filter(df, where), "train_n", "f1", label)
 
     ax.set_xlabel("train_n")
     ax.set_ylabel("F1")
@@ -278,11 +288,7 @@ def plot_lines(df: pd.DataFrame, x: str, y: str,
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        subset = df.copy()
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
-        subset = subset.sort_values(x)
-        ax.plot(subset[x], subset[y], marker="o", label=label)
+        _plot_line(ax, _filter(df, where), x, y, label)
 
     ax.set_xlabel(x)
     ax.set_ylabel(y)
