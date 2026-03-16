@@ -1,20 +1,18 @@
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as T
-from torch.utils.data import DataLoader, TensorDataset
 
-from models import SpeechExtractorModule, SpeechAnomalyModule
-from data import get_spectrograms
+from lib.models import SpeechExtractorModule, SpeechAnomalyModule
+from lib.data import get_spectrograms
+
+ROOT = Path(__file__).parent.parent.parent
 
 # --- 1. Setup and Model Loading ---
 DEVICE = "mps" if T.backends.mps.is_available() else "cpu"
 
-extractor = SpeechExtractorModule.load_from_checkpoint("./best.ckpt")
-# Loading your specific autoencoder checkpoint
-anomalymodule = SpeechAnomalyModule.load_from_checkpoint(
-    "./best_anomaly_model.ckpt"
-)
-
+extractor = SpeechExtractorModule.load_from_checkpoint(ROOT / "best.ckpt")
+anomalymodule = SpeechAnomalyModule.load_from_checkpoint(ROOT / "best_anomaly_model.ckpt")
 
 anomalymodule.to(DEVICE).eval()
 extractor.to(DEVICE).eval()
@@ -23,8 +21,8 @@ threshold = anomalymodule.computed_threshold.item()
 
 print("Loading 1,000 test samples...")
 TEST_N = 500
-specs_yes = get_spectrograms("./data", target_class="yes", n=TEST_N, subset="testing").to(DEVICE)
-specs_no  = get_spectrograms("./data", target_class="no",  n=TEST_N, subset="testing").to(DEVICE)
+specs_yes = get_spectrograms(str(ROOT / "data"), target_class="yes", n=TEST_N, subset="testing").to(DEVICE)
+specs_no  = get_spectrograms(str(ROOT / "data"), target_class="no",  n=TEST_N, subset="testing").to(DEVICE)
 
 with T.no_grad():
     emb_yes = extractor(specs_yes, return_embedding=True)
@@ -48,14 +46,12 @@ print(f"False Alarm Rate:           {false_alarms}/{TEST_N} ({false_alarms/TEST_
 print(f"Overall Accuracy:           {(hits + correct_normals) / (TEST_N * 2):.2%}")
 print("-" * 30)
 
-# --- 6. Visualization ---
+# --- Visualization ---
 plt.figure(figsize=(12, 6))
 
-# Plotting the scores
 plt.hist(scores_yes, bins=50, alpha=0.6, label='Normal (Yes)', color='#3498db', density=True)
 plt.hist(scores_no, bins=50, alpha=0.6, label='Anomaly (No)', color='#e74c3c', density=True)
 
-# Visualizing the Threshold
 plt.axvline(threshold, color='black', linestyle='--', linewidth=2, label=f'Threshold (95th Perc)')
 
 plt.title("One-Class Classification: Reconstruction Error Distribution", fontsize=14)

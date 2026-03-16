@@ -1,9 +1,12 @@
 import argparse
+from pathlib import Path
 import lightning as L
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
-from models import SpeechExtractorModule
-from data import SpeechCommandsDataModule
+from lib.models import SpeechExtractorModule
+from lib.data import SpeechCommandsDataModule
+
+ROOT = Path(__file__).parent.parent.parent
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Train a speech feature extractor on Google Speech Commands")
@@ -14,7 +17,7 @@ parser.add_argument("--batch_size",    type=int,   default=64)
 parser.add_argument("--lr",            type=float, default=1e-3)
 parser.add_argument("--patience",      type=int,   default=7,   help="Early stopping patience")
 parser.add_argument("--seed",          type=int,   default=42)
-parser.add_argument("--data_dir",      type=str,   default="./data")
+parser.add_argument("--data_dir",      type=str,   default=str(ROOT / "data"))
 parser.add_argument("--num_workers",   type=int,   default=4)
 parser.add_argument("--held_out_words", type=str,  nargs="+", default=[],
                     help="Word classes to exclude from training (e.g. --held_out_words yes no wow)")
