@@ -18,7 +18,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, precision_score, recall_score, f1_score
 
 from models import SpeechExtractorModule, SpeechAutoencoder
 from data import get_spectrograms
@@ -152,16 +152,33 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     false_alarms = preds_target.sum()
     hits = preds_other.sum()
 
-    # AUC: label 0 = target (normal), 1 = other (anomaly)
+    # label 0 = target (normal), 1 = other (anomaly)
     labels = np.concatenate([np.zeros(n_target), np.ones(n_other)])
+    preds = np.concatenate([preds_target, preds_other]).astype(int)
     scores = np.concatenate([scores_target, scores_other])
+
     auc = roc_auc_score(labels, scores)
+    auprc = average_precision_score(labels, scores)
+
+    # EER: operating point where FAR == FRR (1 - recall)
+    fpr, tpr, _ = roc_curve(labels, scores)
+    fnr = 1 - tpr
+    eer_idx = np.argmin(np.abs(fpr - fnr))
+    eer = float((fpr[eer_idx] + fnr[eer_idx]) / 2)
+
+    precision = precision_score(labels, preds, zero_division=0)
+    recall = hits / n_other
+    f1 = f1_score(labels, preds, zero_division=0)
 
     return {
-        "recall": hits / n_other,
+        "recall": recall,
+        "precision": precision,
+        "f1": f1,
         "false_alarm_rate": false_alarms / n_target,
         "accuracy": (hits + n_target - false_alarms) / (n_target + n_other),
         "auc": auc,
+        "auprc": auprc,
+        "eer": eer,
         "threshold": adapter.threshold,
     }
 
@@ -171,6 +188,161 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
+
+def plot_far_recall(df: pd.DataFrame, lines: list[tuple[str, dict]]):
+    """Scatter plot of operating points in FAR vs Recall space.
+
+    Each (label, filter_dict) pair becomes one scatter series, with one point
+    per row that matches the filter.  Useful for exposing degenerate configs
+    (FAR≈1, recall≈1) versus well-calibrated ones.
+
+    Args:
+        df    : results DataFrame
+        lines : list of (label, filter_dict) pairs
+    """
+    fig, ax = plt.subplots()
+    for label, where in lines:
+        subset = df.copy()
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
+        ax.scatter(subset["false_alarm_rate"], subset["recall"], label=label, s=60)
+
+    ax.set_xlabel("False Alarm Rate (FAR)")
+    ax.set_ylabel("Recall (TPR)")
+    ax.set_title("Operating points: Recall vs FAR")
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.05, 1.05)
+    ax.axline((0, 0), slope=1, color="grey", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
+    """EER vs train_n for selected configs.
+
+    EER is threshold-free and directly comparable across adapters — lower is
+    better.  A single line per config keeps the chart readable.
+
+    Args:
+        df    : results DataFrame
+        lines : list of (label, filter_dict) pairs
+    """
+    fig, ax = plt.subplots()
+    for label, where in lines:
+        subset = df.copy()
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
+        subset = subset.sort_values("train_n")
+        ax.plot(subset["train_n"], subset["eer"], marker="o", label=label)
+
+    ax.set_xlabel("train_n")
+    ax.set_ylabel("EER")
+    ax.set_title("Equal Error Rate vs training budget")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_auc_auprc(df: pd.DataFrame, lines: list[tuple[str, dict]]):
+    """AUC-ROC (solid) and AUPRC (dashed) vs train_n on one figure.
+
+    Plotting both metrics together exposes cases where AUC looks good but
+    AUPRC is poor (e.g. degenerate GMM-full configs with FAR=1).
+
+    Args:
+        df    : results DataFrame
+        lines : list of (label, filter_dict) pairs
+    """
+    fig, ax = plt.subplots()
+    prop_cycle = plt.rcParams["axes.prop_cycle"]
+    colors = [p["color"] for p in prop_cycle]
+
+    for i, (label, where) in enumerate(lines):
+        subset = df.copy()
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
+        subset = subset.sort_values("train_n")
+        c = colors[i % len(colors)]
+        ax.plot(subset["train_n"], subset["auc"],   color=c, linestyle="-",  marker="o", label=f"{label} AUC-ROC")
+        ax.plot(subset["train_n"], subset["auprc"], color=c, linestyle="--", marker="s", label=f"{label} AUPRC")
+
+    ax.set_xlabel("train_n")
+    ax.set_ylabel("Score")
+    ax.set_title("AUC-ROC (—) vs AUPRC (--) by training budget")
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_precision_recall_bar(df: pd.DataFrame, train_n: int,
+                               lines: list[tuple[str, dict]]):
+    """Grouped bar chart of precision and recall at a fixed train_n.
+
+    Shows threshold calibration quality: a well-calibrated adapter has both
+    high recall and high precision.  Degenerate configs (recall≈1, precision≈0.5)
+    are immediately visible.
+
+    Args:
+        df      : results DataFrame
+        train_n : the training budget to slice on
+        lines   : list of (label, filter_dict) pairs
+    """
+    labels, precisions, recalls = [], [], []
+    for label, where in lines:
+        subset = df[df["train_n"] == train_n].copy()
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
+        if subset.empty:
+            continue
+        row = subset.iloc[0]
+        labels.append(label)
+        precisions.append(row["precision"])
+        recalls.append(row["recall"])
+
+    x = np.arange(len(labels))
+    width = 0.35
+    fig, ax = plt.subplots()
+    ax.bar(x - width / 2, precisions, width, label="Precision")
+    ax.bar(x + width / 2, recalls,    width, label="Recall")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=15, ha="right")
+    ax.set_ylabel("Score")
+    ax.set_ylim(0, 1.05)
+    ax.set_title(f"Precision vs Recall at train_n={train_n}")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_f1(df: pd.DataFrame, lines: list[tuple[str, dict]]):
+    """F1 vs train_n for selected configs.
+
+    F1 penalises degenerate configs (recall=1, precision≈0.5 → F1≈0.66)
+    while rewarding well-calibrated ones, making it a clean single-line
+    comparison when the threshold matters.
+
+    Args:
+        df    : results DataFrame
+        lines : list of (label, filter_dict) pairs
+    """
+    fig, ax = plt.subplots()
+    for label, where in lines:
+        subset = df.copy()
+        for k, v in where.items():
+            subset = subset[subset[k] == v]
+        subset = subset.sort_values("train_n")
+        ax.plot(subset["train_n"], subset["f1"], marker="o", label=label)
+
+    ax.set_xlabel("train_n")
+    ax.set_ylabel("F1")
+    ax.set_title("F1 vs training budget")
+    ax.set_ylim(0, 1.05)
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
 
 def plot_sweep(df: pd.DataFrame, x: str, y: str, group_by: str = None,
                filter: str = None, where: dict = None):
@@ -334,16 +506,41 @@ def main():
     #
     # plot_sweep: one group_by column becomes separate lines
     # plot_lines: pick exact configs as named lines on one plot
+    # plot_far_recall: operating point scatter (FAR vs Recall)
+    # plot_eer: EER vs train_n (threshold-free)
+    # plot_auc_auprc: AUC-ROC vs AUPRC comparison
+    # plot_precision_recall_bar: precision/recall bar at fixed train_n
+    # plot_f1: F1 vs train_n
     #
     # Each line is (label, filter_dict) where filter_dict matches columns.
     # =================================================================
     lines = [
-        ("AE epochs=2000",   {"adapter": "AutoencoderAdapter", "epochs": 100}),
-        ("GMM diag n=1",     {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "diag"}),
-        ("GMM diag n=2",     {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "diag"}),
+        ("AE",           {"adapter": "AutoencoderAdapter", "epochs": 100}),
+        ("GMM diag n=1", {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "diag"}),
+        ("GMM diag n=2", {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "diag"}),
+        ("GMM full n=1", {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "full"}),
+        ("GMM full n=2", {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "full"}),
     ]
-    plot_lines(df, x="train_n", y="accuracy",  lines=lines)
-    plot_lines(df, x="train_n", y="auc",       lines=lines)
+    lines_good = lines[:3]  # exclude degenerate full-cov configs for cleaner plots
+
+    # Classic scalar metric lines
+    # plot_lines(df, x="train_n", y="auc", lines=lines_good)
+
+    # # Operating point scatter — exposes degenerate full-cov configs
+    # plot_far_recall(df, lines=lines)
+
+    # # Threshold-free comparison: EER (lower = better)
+    # plot_eer(df, lines=lines_good)
+
+    # # AUC-ROC vs AUPRC — flags cases where AUC flatters a config
+    # plot_auc_auprc(df, lines=lines_good)
+
+    # # Precision & Recall at one representative budget
+    # plot_precision_recall_bar(df, train_n=50, lines=lines)
+
+    # # F1 penalises degenerate configs, clean single-number comparison
+    # plot_f1(df, lines=lines_good)
+
     plt.show()
 
     return df
