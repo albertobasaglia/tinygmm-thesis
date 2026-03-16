@@ -42,13 +42,13 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     f1 = f1_score(labels, preds, zero_division=0)
 
     return {
-        "recall": recall,
-        "precision": precision,
-        "f1": f1,
-        "false_alarm_rate": false_alarms / n_target,
-        "accuracy": (hits + n_target - false_alarms) / (n_target + n_other),
-        "auc": auc,
-        "auprc": auprc,
-        "eer": eer,
-        "threshold": adapter.threshold,
+        "m_recall": recall,
+        "m_precision": precision,
+        "m_f1": f1,
+        "m_false_alarm_rate": false_alarms / n_target,
+        "m_accuracy": (hits + n_target - false_alarms) / (n_target + n_other),
+        "m_auc": auc,
+        "m_auprc": auprc,
+        "m_eer": eer,
+        "m_threshold": adapter.threshold,
     }

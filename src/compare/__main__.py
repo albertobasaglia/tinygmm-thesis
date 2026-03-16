@@ -54,9 +54,8 @@ def main():
     # then copy the best .ckpt here and add an entry.
     # =================================================================
     CHECKPOINTS = [
-        (ROOT / "best.ckpt", 32),
-        # (ROOT / "best_dim16.ckpt", 16),
-        # (ROOT / "best_dim8.ckpt",   8),
+        (ROOT / "best_32.ckpt", 32),
+        (ROOT / "best_16.ckpt", 16),
     ]
 
     # =================================================================
@@ -77,9 +76,7 @@ def main():
     # NOTE: do not set input_dim in AutoencoderAdapter here — it is
     # injected automatically from the checkpoint's embedding_dim below.
     # =================================================================
-    TRAIN_N = 64
-
-    train_n = [10, 15, 20, 25, 30, 40, 50, 100]
+    train_n = [10, 15, 20, 25, 30]
 
     def make_configs(embedding_dim: int) -> list:
         return [
@@ -103,7 +100,7 @@ def main():
     # --- Extract spectrograms once (shared across all checkpoints) ---
     print("Loading spectrograms...")
     data_dir = str(ROOT / "data")
-    specs_train = get_spectrograms(data_dir, target_class="yes", n=TRAIN_N)
+    specs_train = get_spectrograms(data_dir, target_class="yes", n=max(train_n))
     specs_yes   = get_spectrograms(data_dir, target_class="yes", n=TEST_N, subset="testing")
     specs_no    = get_spectrograms(data_dir, target_class="no",  n=TEST_N, subset="testing")
 
@@ -129,10 +126,10 @@ def main():
                 adapter = cls(**kwargs)
                 adapter.fit(shuffled_emb)
                 rows.append({
-                    "trial": trial,
-                    "embedding_dim": embedding_dim,
-                    "adapter": cls.__name__,
-                    **kwargs,
+                    "p_trial": trial,
+                    "p_embedding_dim": embedding_dim,
+                    "p_adapter": cls.__name__,
+                    **{f"p_{k}": v for k, v in kwargs.items()},
                     **evaluate(adapter, test_target, test_other),
                 })
 
@@ -141,58 +138,50 @@ def main():
     print(df.to_string(index=False))
 
     # =================================================================
-    # PLOTS
-    #
-    # --- Per-adapter comparisons (single embedding_dim) ---
-    # plot_lines:               generic y vs x, one line per config
-    # plot_far_recall:          operating point scatter (FAR vs Recall)
-    # plot_eer:                 EER vs train_n (threshold-free)
-    # plot_auc_auprc:           AUC-ROC vs AUPRC on one chart
-    # plot_precision_recall_bar precision/recall bars at a fixed train_n
-    # plot_f1:                  F1 vs train_n
-    #
-    # --- Embedding-dim ablation (multiple checkpoints) ---
-    # plot_eer_by_dim:          EER vs embedding_dim at fixed train_n
-    # plot_eer_train_n_by_dim:  EER vs train_n, one line per embedding_dim
-    #
-    # Each line is (label, filter_dict) where filter_dict matches columns.
+    # PLOTS — Hyperparameter selection per adapter, then final comparison
     # =================================================================
-    lines = [
-        ("AE",           {"adapter": "AutoencoderAdapter", "epochs": 100}),
-        ("GMM diag n=1", {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "diag"}),
-        ("GMM diag n=2", {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "diag"}),
-        ("GMM full n=1", {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "full"}),
-        ("GMM full n=2", {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "full"}),
-        ("KNN k=1",      {"adapter": "KNNAdapter", "k": 1}),
-        ("KNN k=3",      {"adapter": "KNNAdapter", "k": 3}),
-        ("KNN k=5",      {"adapter": "KNNAdapter", "k": 5}),
+
+    # --- 1. Best Autoencoder (16 vs 32) ---
+    ae_lines = [
+        ("AE dim=32", {"p_adapter": "AutoencoderAdapter", "p_embedding_dim": 32}),
+        ("AE dim=16", {"p_adapter": "AutoencoderAdapter", "p_embedding_dim": 16}),
     ]
-    lines_good = [l for l in lines if "full" not in l[0]]
+    plot_eer(df, lines=ae_lines)
+    plot_lines(df, x="p_train_n", y="m_auc", lines=ae_lines)
 
-    # Classic scalar metric lines
-    plot_lines(df, x="train_n", y="auc", lines=lines_good)
+    # --- 2. Best GMM (n_components × covariance_type × dim) ---
+    gmm_lines = [
+        ("diag n=1 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag", "p_embedding_dim": 32}),
+        ("diag n=2 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "diag", "p_embedding_dim": 32}),
+        ("full n=1 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "full", "p_embedding_dim": 32}),
+        ("full n=2 dim=32", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "full", "p_embedding_dim": 32}),
+        ("diag n=1 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag", "p_embedding_dim": 16}),
+        ("diag n=2 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "diag", "p_embedding_dim": 16}),
+        ("full n=1 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "full", "p_embedding_dim": 16}),
+        ("full n=2 dim=16", {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "full", "p_embedding_dim": 16}),
+    ]
+    plot_eer(df, lines=gmm_lines)
+    plot_lines(df, x="p_train_n", y="m_auc", lines=gmm_lines)
 
-    # Operating point scatter — exposes degenerate full-cov configs
-    # plot_far_recall(df, lines=lines)
+    # --- 3. Best KNN (k × dim) ---
+    knn_lines = [
+        ("k=1 dim=32", {"p_adapter": "KNNAdapter", "p_k": 1, "p_embedding_dim": 32}),
+        ("k=3 dim=32", {"p_adapter": "KNNAdapter", "p_k": 3, "p_embedding_dim": 32}),
+        ("k=5 dim=32", {"p_adapter": "KNNAdapter", "p_k": 5, "p_embedding_dim": 32}),
+        ("k=1 dim=16", {"p_adapter": "KNNAdapter", "p_k": 1, "p_embedding_dim": 16}),
+        ("k=3 dim=16", {"p_adapter": "KNNAdapter", "p_k": 3, "p_embedding_dim": 16}),
+        ("k=5 dim=16", {"p_adapter": "KNNAdapter", "p_k": 5, "p_embedding_dim": 16}),
+    ]
+    plot_eer(df, lines=knn_lines)
+    plot_lines(df, x="p_train_n", y="m_auc", lines=knn_lines)
 
-    # Threshold-free comparison: EER (lower = better)
-    plot_eer(df, lines=lines_good)
-
-    # AUC-ROC vs AUPRC — flags cases where AUC flatters a config
-    # plot_auc_auprc(df, lines=lines_good)
-
-    # Precision & Recall at one representative budget
-    # plot_precision_recall_bar(df, train_n=50, lines=lines)
-
-    # F1 penalises degenerate configs, clean single-number comparison
-    # plot_f1(df, lines=lines_good)
-
-    # --- Embedding-dim ablation (uncomment when multiple checkpoints are loaded) ---
-    # EER vs embedding_dim at a fixed enrollment budget
-    # plot_eer_by_dim(df, lines=lines_good, fixed_train_n=50)
-
-    # EER vs train_n with one line per embedding_dim, for a single adapter config
-    # plot_eer_train_n_by_dim(df, where={"adapter": "GMMAdapter", "covariance_type": "diag", "n_components": 1})
+    # --- 4. Final comparison: best from each adapter ---
+    # (update these filters after inspecting plots 1-3)
+    # plot_eer(df, lines=[
+    #     ("AE",  {"p_adapter": "AutoencoderAdapter", "p_embedding_dim": ...}),
+    #     ("GMM", {"p_adapter": "GMMAdapter", "p_n_components": ..., "p_covariance_type": "...", "p_embedding_dim": ...}),
+    #     ("KNN", {"p_adapter": "KNNAdapter", "p_k": ..., "p_embedding_dim": ...}),
+    # ])
 
     plt.show()
 

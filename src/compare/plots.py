@@ -40,7 +40,7 @@ def plot_far_recall(df: pd.DataFrame, lines: list[tuple[str, dict]]):
         subset = df.copy()
         for k, v in where.items():
             subset = subset[subset[k] == v]
-        ax.scatter(subset["false_alarm_rate"], subset["recall"], label=label, s=60)
+        ax.scatter(subset["m_false_alarm_rate"], subset["m_recall"], label=label, s=60)
 
     ax.set_xlabel("False Alarm Rate (FAR)")
     ax.set_ylabel("Recall (TPR)")
@@ -65,7 +65,7 @@ def plot_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        _plot_line(ax, _filter(df, where), "train_n", "eer", label)
+        _plot_line(ax, _filter(df, where), "p_train_n", "m_eer", label)
 
     ax.set_xlabel("train_n")
     ax.set_ylabel("EER")
@@ -92,11 +92,11 @@ def plot_auc_auprc(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     for i, (label, where) in enumerate(lines):
         subset = _filter(df, where)
         c = colors[i % len(colors)]
-        _plot_line(ax, subset, "train_n", "auc",   f"{label} AUC-ROC", color=c, linestyle="-")
-        _plot_line(ax, subset, "train_n", "auprc", f"{label} AUPRC",   color=c, linestyle="--")
+        _plot_line(ax, subset, "p_train_n", "m_auc",   f"{label} AUC-ROC", color=c, linestyle="-")
+        _plot_line(ax, subset, "p_train_n", "m_auprc", f"{label} AUPRC",   color=c, linestyle="--")
 
     ax.set_xlabel("train_n")
-    ax.set_ylabel("Score")
+    ax.set_ylabel("score")
     ax.set_title("AUC-ROC (—) vs AUPRC (--) by training budget")
     ax.set_ylim(0, 1.05)
     ax.legend(fontsize=8)
@@ -119,15 +119,15 @@ def plot_precision_recall_bar(df: pd.DataFrame, train_n: int,
     """
     labels, precisions, recalls = [], [], []
     for label, where in lines:
-        subset = df[df["train_n"] == train_n].copy()
+        subset = df[df["p_train_n"] == train_n].copy()
         for k, v in where.items():
             subset = subset[subset[k] == v]
         if subset.empty:
             continue
         row = subset.iloc[0]
         labels.append(label)
-        precisions.append(row["precision"])
-        recalls.append(row["recall"])
+        precisions.append(row["m_precision"])
+        recalls.append(row["m_recall"])
 
     x = np.arange(len(labels))
     width = 0.35
@@ -157,7 +157,7 @@ def plot_f1(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        _plot_line(ax, _filter(df, where), "train_n", "f1", label)
+        _plot_line(ax, _filter(df, where), "p_train_n", "m_f1", label)
 
     ax.set_xlabel("train_n")
     ax.set_ylabel("F1")
@@ -182,15 +182,15 @@ def plot_eer_by_dim(df: pd.DataFrame, lines: list[tuple[str, dict]],
     """
     subset = df.copy()
     if fixed_train_n is not None:
-        subset = subset[subset["train_n"] == fixed_train_n]
+        subset = subset[subset["p_train_n"] == fixed_train_n]
 
     fig, ax = plt.subplots()
     for label, where in lines:
         s = subset.copy()
         for k, v in where.items():
             s = s[s[k] == v]
-        s = s.groupby("embedding_dim")["eer"].mean().reset_index().sort_values("embedding_dim")
-        ax.plot(s["embedding_dim"], s["eer"], marker="o", label=label)
+        s = s.groupby("p_embedding_dim")["m_eer"].mean().reset_index().sort_values("p_embedding_dim")
+        ax.plot(s["p_embedding_dim"], s["m_eer"], marker="o", label=label)
 
     ax.set_xlabel("embedding_dim")
     ax.set_ylabel("EER")
@@ -212,7 +212,7 @@ def plot_eer_train_n_by_dim(df: pd.DataFrame, where: dict = None):
     Args:
         df    : results DataFrame
         where : optional filter to narrow to a single adapter config,
-                e.g. {"adapter": "GMMAdapter", "covariance_type": "diag"}
+                e.g. {"p_adapter": "GMMAdapter", "p_covariance_type": "diag"}
     """
     subset = df.copy()
     if where:
@@ -220,9 +220,8 @@ def plot_eer_train_n_by_dim(df: pd.DataFrame, where: dict = None):
             subset = subset[subset[k] == v]
 
     fig, ax = plt.subplots()
-    for dim, group in subset.groupby("embedding_dim"):
-        g = group.groupby("train_n")["eer"].mean().reset_index().sort_values("train_n")
-        ax.plot(g["train_n"], g["eer"], marker="o", label=f"dim={dim}")
+    for dim, group in subset.groupby("p_embedding_dim"):
+        _plot_line(ax, group, "p_train_n", "m_eer", f"dim={dim}")
 
     ax.set_xlabel("train_n")
     ax.set_ylabel("EER")
@@ -241,15 +240,15 @@ def plot_sweep(df: pd.DataFrame, x: str, y: str, group_by: str = None,
 
     Args:
         df       : results DataFrame
-        x        : column name for the x-axis  (e.g. "n_components")
-        y        : column name for the y-axis   (e.g. "auc", "recall")
-        group_by : column name for separate lines (e.g. "covariance_type")
-        filter   : if set, only plot rows where adapter == this name
-        where    : extra column filters, e.g. {"covariance_type": "diag"}
+        x        : column name for the x-axis  (e.g. "p_n_components")
+        y        : column name for the y-axis   (e.g. "m_auc", "m_recall")
+        group_by : column name for separate lines (e.g. "p_covariance_type")
+        filter   : if set, only plot rows where p_adapter == this name
+        where    : extra column filters, e.g. {"p_covariance_type": "diag"}
     """
     subset = df.copy()
     if filter:
-        subset = subset[subset["adapter"] == filter]
+        subset = subset[subset["p_adapter"] == filter]
     if where:
         for k, v in where.items():
             subset = subset[subset[k] == v]
@@ -282,8 +281,8 @@ def plot_lines(df: pd.DataFrame, x: str, y: str,
 
     Args:
         df    : results DataFrame
-        x     : column for x-axis (e.g. "train_n")
-        y     : column for y-axis (e.g. "auc")
+        x     : column for x-axis (e.g. "p_train_n")
+        y     : column for y-axis (e.g. "m_auc")
         lines : list of (label, filter_dict) pairs — each becomes one line
     """
     fig, ax = plt.subplots()
