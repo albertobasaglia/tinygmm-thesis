@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from lib.models import SpeechExtractorModule
 from lib.data import get_spectrograms
 
-from .adapters import AutoencoderAdapter, GMMAdapter
+from .adapters import AutoencoderAdapter, GMMAdapter, KNNAdapter
 from .metrics import evaluate
 from .sweep import sweep
 from .plots import (
@@ -92,6 +92,10 @@ def main():
                 "n_components": [1, 2],
                 "covariance_type": ["full", "diag"],
             }),
+            *sweep(KNNAdapter, {
+                "train_n": train_n,
+                "k": [1, 3, 5],
+            }),
         ]
 
     # --- Extract spectrograms once (shared across all checkpoints) ---
@@ -151,17 +155,20 @@ def main():
         ("GMM diag n=2", {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "diag"}),
         ("GMM full n=1", {"adapter": "GMMAdapter", "n_components": 1, "covariance_type": "full"}),
         ("GMM full n=2", {"adapter": "GMMAdapter", "n_components": 2, "covariance_type": "full"}),
+        ("KNN k=1",      {"adapter": "KNNAdapter", "k": 1}),
+        ("KNN k=3",      {"adapter": "KNNAdapter", "k": 3}),
+        ("KNN k=5",      {"adapter": "KNNAdapter", "k": 5}),
     ]
-    lines_good = lines[:3]  # exclude degenerate full-cov configs for cleaner plots
+    lines_good = [l for l in lines if "full" not in l[0]]
 
     # Classic scalar metric lines
-    # plot_lines(df, x="train_n", y="auc", lines=lines_good)
+    plot_lines(df, x="train_n", y="auc", lines=lines_good)
 
     # Operating point scatter — exposes degenerate full-cov configs
     # plot_far_recall(df, lines=lines)
 
     # Threshold-free comparison: EER (lower = better)
-    # plot_eer(df, lines=lines_good)
+    plot_eer(df, lines=lines_good)
 
     # AUC-ROC vs AUPRC — flags cases where AUC flatters a config
     # plot_auc_auprc(df, lines=lines_good)

@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import NearestNeighbors
 
 from lib.models import SpeechAutoencoder
 
@@ -106,3 +107,24 @@ class GMMAdapter(Adapter):
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Negative log-likelihood: higher = more anomalous
         return -self._gmm.score_samples(emb)
+
+
+class KNNAdapter(Adapter):
+    def __init__(self, k=5, metric="euclidean", train_n=None):
+        super().__init__(train_n)
+        self.k = k
+        self.metric = metric
+
+    def fit(self, emb: np.ndarray):
+        budget = self._get_budget(emb)
+
+        self._nn = NearestNeighbors(n_neighbors=self.k, metric=self.metric)
+        self._nn.fit(budget)
+
+        train_scores = self.score(budget)
+        self.threshold = float(np.percentile(train_scores, 95))
+
+    def score(self, emb: np.ndarray) -> np.ndarray:
+        # Distance to k-th nearest neighbor (higher = more anomalous)
+        distances, _ = self._nn.kneighbors(emb)
+        return distances[:, -1]
