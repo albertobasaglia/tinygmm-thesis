@@ -1,6 +1,7 @@
 import argparse
 import lightning as L
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.loggers import CSVLogger
 from models import SpeechExtractorModule
 from data import SpeechCommandsDataModule
 
@@ -36,6 +37,8 @@ if __name__ == "__main__":
     print(f"[*] Parameters: {sum(p.numel() for p in module.parameters()):,}")
 
     ckpt_name = f"speech_extractor_emb{args.embedding_dim}_seed{args.seed}"
+    logger = CSVLogger("logs", name="speech_extractor")
+
     trainer = L.Trainer(
         max_epochs=args.epochs,
         accelerator="auto",
@@ -44,6 +47,7 @@ if __name__ == "__main__":
             ModelCheckpoint(monitor="val_loss", filename=ckpt_name, save_top_k=1, mode="min"),
         ],
         deterministic=True,
+        logger=logger
     )
 
     trainer.fit(module, datamodule=dm)

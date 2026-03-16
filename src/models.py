@@ -67,3 +67,67 @@ class SpeechExtractorModule(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "monitor": "val_loss"}}
+
+
+class SpeechAutoencoder(nn.Module):
+    """
+    Bottleneck-style autoencoder for 1-class classification.
+    Input: 32-D embedding from SpeechFeatureExtractor.
+    """
+    def __init__(self, input_dim: int = 32, hidden_dim: int = 16, latent_dim: int = 8):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, latent_dim)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.decoder(self.encoder(x))
+
+
+class SpeechAnomalyModule(L.LightningModule):
+    """
+    Trainer for the Autoencoder. 
+    Focuses on Reconstruction Loss (MSE) for One-Class Classification.
+    """
+    def __init__(self, input_dim: int = 32, hidden_dim: int = 16, latent_dim: int = 8, 
+                 lr: float = 1e-3, noise_std: float = 0.02):
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = SpeechAutoencoder(input_dim, hidden_dim, latent_dim)
+        self.criterion = nn.MSELoss()
+
+        self.register_buffer("computed_threshold", torch.tensor(0.0))
+
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch, _):
+        x = batch[0] if isinstance(batch, list) else batch
+
+        reconstructed = self.model(x)
+        loss = self.criterion(reconstructed, x)
+        
+        self.log("train_reconst_loss", loss, prog_bar=True, on_epoch=True, on_step=False)
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        x = batch[0]
+        reconstructed = self.model(x)
+        loss = self.criterion(reconstructed, x)
+        self.log("val_loss", loss, prog_bar=True, on_epoch=True, on_step=False)
+        return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
+
+    @torch.no_grad()
+    def get_anomaly_score(self, x: torch.Tensor):
+        reconstructed = self.model(x)
+        return torch.mean((x - reconstructed) ** 2, dim=1)
