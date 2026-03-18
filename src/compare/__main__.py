@@ -76,7 +76,8 @@ def main():
             *sweep(GMMAdapter, {
                 "train_n": train_n,
                 "n_components": [1, 2],
-                "covariance_type": ["full", "diag"],
+                "covariance_type": ["diag"],
+                "threshold_percentile": [95, 96, 97, 98, 99],
             }),
             *sweep(KNNAdapter, {
                 "train_n": train_n,

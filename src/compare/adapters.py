@@ -86,23 +86,28 @@ class AutoencoderAdapter(Adapter):
 
 
 class GMMAdapter(Adapter):
-    def __init__(self, n_components=3, covariance_type="full", train_n=None):
+    def __init__(self, n_components=3, covariance_type="full", val_frac=0.25,
+                 threshold_percentile=95, train_n=None):
         super().__init__(train_n)
         self.n_components = n_components
         self.covariance_type = covariance_type
+        self.val_frac = val_frac
+        self.threshold_percentile = threshold_percentile
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
+        split = max(1, int(len(budget) * (1 - self.val_frac)))
+        train_emb, val_emb = budget[:split], budget[split:]
 
         self._gmm = GaussianMixture(
             n_components=self.n_components,
             covariance_type=self.covariance_type,
             reg_covar=1e-4,
         )
-        self._gmm.fit(budget)
+        self._gmm.fit(train_emb)
 
-        train_scores = self.score(budget)
-        self.threshold = float(np.percentile(train_scores, 95))
+        val_scores = self.score(val_emb)
+        self.threshold = float(np.percentile(val_scores, self.threshold_percentile))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Negative log-likelihood: higher = more anomalous
@@ -110,19 +115,22 @@ class GMMAdapter(Adapter):
 
 
 class KNNAdapter(Adapter):
-    def __init__(self, k=5, metric="euclidean", train_n=None):
+    def __init__(self, k=5, metric="euclidean", val_frac=0.25, train_n=None):
         super().__init__(train_n)
         self.k = k
         self.metric = metric
+        self.val_frac = val_frac
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
+        split = max(1, int(len(budget) * (1 - self.val_frac)))
+        train_emb, val_emb = budget[:split], budget[split:]
 
         self._nn = NearestNeighbors(n_neighbors=self.k, metric=self.metric)
-        self._nn.fit(budget)
+        self._nn.fit(train_emb)
 
-        train_scores = self.score(budget)
-        self.threshold = float(np.percentile(train_scores, 95))
+        val_scores = self.score(val_emb)
+        self.threshold = float(np.percentile(val_scores, 95))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Distance to k-th nearest neighbor (higher = more anomalous)
