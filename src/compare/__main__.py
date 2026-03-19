@@ -14,8 +14,8 @@ import numpy as np
 import torch
 import pandas as pd
 
-from lib.models import SpeechExtractorModule
-from lib.data import get_spectrograms
+from embeddings.base import EmbeddingProvider
+from embeddings.speech import SpeechEmbeddingProvider
 
 from .adapters import AutoencoderAdapter, GMMAdapter, KNNAdapter
 from .metrics import evaluate
@@ -29,20 +29,16 @@ def main():
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
-    # CHECKPOINTS
+    # EMBEDDING PROVIDERS
     #
-    # List of (ckpt_path, embedding_dim) pairs.  Each entry is one
-    # Stage-1 feature extractor trained with a specific embedding size.
-    # The sweep below is run independently for every checkpoint and
-    # results are tagged with embedding_dim so they can be plotted together.
-    #
-    # Train additional checkpoints with:
-    #   python train_speech_extractor.py --embedding_dim 16
-    # then copy the best .ckpt here and add an entry.
+    # Each provider wraps a dataset + feature extractor and returns
+    # (train, test_target, test_other) embedding arrays.
+    # The sweep runs independently per provider; results are tagged
+    # with embedding_dim so they can be plotted together.
     # =================================================================
-    CHECKPOINTS = [
-        (ROOT / "best_32.ckpt", 32),
-        (ROOT / "best_16.ckpt", 16),
+    providers: list[EmbeddingProvider] = [
+        SpeechEmbeddingProvider(ROOT / "best_32.ckpt", 32, ROOT / "data", device=DEVICE),
+        SpeechEmbeddingProvider(ROOT / "best_16.ckpt", 16, ROOT / "data", device=DEVICE),
     ]
 
     # =================================================================
@@ -61,7 +57,7 @@ def main():
     #    This produces 6 entries: n=1/full, n=1/diag, n=3/full, ...
     #
     # NOTE: do not set input_dim in AutoencoderAdapter here — it is
-    # injected automatically from the checkpoint's embedding_dim below.
+    # injected automatically from the provider's embedding_dim below.
     # =================================================================
     train_n = [10, 15, 20, 25, 30]
 
@@ -85,24 +81,12 @@ def main():
             }),
         ]
 
-    # --- Extract spectrograms once (shared across all checkpoints) ---
-    print("Loading spectrograms...")
-    data_dir = str(ROOT / "data")
-    specs_train = get_spectrograms(data_dir, target_class="yes", n=max(train_n))
-    specs_yes   = get_spectrograms(data_dir, target_class="yes", n=TEST_N, subset="testing")
-    specs_no    = get_spectrograms(data_dir, target_class="no",  n=TEST_N, subset="testing")
-
-    # --- Loop over checkpoints ---
+    # --- Loop over providers ---
     rows = []
-    for ckpt_path, embedding_dim in CHECKPOINTS:
-        print(f"\n=== embedding_dim={embedding_dim} ({ckpt_path}) ===")
-        extractor = SpeechExtractorModule.load_from_checkpoint(ckpt_path)
-        extractor.to(DEVICE).eval()
-
-        with torch.no_grad():
-            train_emb   = extractor(specs_train.to(DEVICE), return_embedding=True).cpu().numpy()
-            test_target = extractor(specs_yes.to(DEVICE),   return_embedding=True).cpu().numpy()
-            test_other  = extractor(specs_no.to(DEVICE),    return_embedding=True).cpu().numpy()
+    for provider in providers:
+        embedding_dim = provider.embedding_dim
+        print(f"\n=== {provider.name} (dim={embedding_dim}) ===")
+        train_emb, test_target, test_other = provider.get_embeddings(max(train_n), TEST_N)
 
         for trial in range(N_TRIALS):
             rng = np.random.default_rng(seed=trial)
