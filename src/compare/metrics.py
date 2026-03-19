@@ -11,7 +11,19 @@ from .adapters import Adapter
 
 
 def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) -> dict:
-    """Evaluate a fitted adapter. Returns dict of metrics."""
+    """Evaluate a fitted adapter on held-out test embeddings.
+
+    Args:
+        adapter: A fitted adapter (threshold already calibrated during fit).
+        target_emb: Test embeddings of the target (normal/in-class) speaker.
+            Samples here should be *unseen* during fit. Label 0 internally.
+        other_emb: Test embeddings of non-target (anomaly/out-of-class) speakers.
+            Label 1 internally.
+
+    Returns:
+        Dict with ``m_``-prefixed metric keys: recall, precision, f1,
+        false_alarm_rate, accuracy, auc, auprc, eer, threshold.
+    """
     scores_target = adapter.score(target_emb)
     scores_other = adapter.score(other_emb)
 
