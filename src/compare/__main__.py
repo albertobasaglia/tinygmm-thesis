@@ -8,6 +8,8 @@ Edit CHECKPOINTS and make_configs() to control what gets compared.
 Results are saved as a Parquet file in results/.
 """
 
+import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -21,8 +23,16 @@ from .adapters import AutoencoderAdapter, GMMAdapter, KNNAdapter
 from .metrics import evaluate
 from .sweep import sweep
 
+log = logging.getLogger(__name__)
+
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
     N_TRIALS = 10
@@ -37,7 +47,7 @@ def main():
     # with embedding_dim so they can be plotted together.
     # =================================================================
     providers: list[EmbeddingProvider] = [
-        SpeechEmbeddingProvider(ROOT / "best_32.ckpt", 32, ROOT / "data", device=DEVICE),
+        # SpeechEmbeddingProvider(ROOT / "best_32.ckpt", 32, ROOT / "data", device=DEVICE),
         SpeechEmbeddingProvider(ROOT / "best_16.ckpt", 16, ROOT / "data", device=DEVICE),
     ]
 
@@ -59,13 +69,13 @@ def main():
     # NOTE: do not set input_dim in AutoencoderAdapter here — it is
     # injected automatically from the provider's embedding_dim below.
     # =================================================================
-    train_n = [10, 15, 20, 25, 30]
+    train_n = list(range(10, 51, 2))
 
     def make_configs(embedding_dim: int) -> list:
         return [
             *sweep(AutoencoderAdapter, {
                 "train_n": train_n,
-                "epochs": [100],
+                "epochs": [50, 100],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             }),
@@ -73,28 +83,34 @@ def main():
                 "train_n": train_n,
                 "n_components": [1, 2],
                 "covariance_type": ["diag"],
-                "threshold_percentile": [95, 96, 97, 98, 99],
             }),
             *sweep(KNNAdapter, {
                 "train_n": train_n,
-                "k": [1, 3, 5],
+                "k": [1, 2],
             }),
         ]
 
     # --- Loop over providers ---
     rows = []
+    total_t0 = time.perf_counter()
+
     for provider in providers:
         embedding_dim = provider.embedding_dim
-        print(f"\n=== {provider.name} (dim={embedding_dim}) ===")
+        log.info("Provider %s (dim=%d)", provider.name, embedding_dim)
+
+        t0 = time.perf_counter()
         train_emb, test_target, test_other = provider.get_embeddings(max(train_n), TEST_N)
+        log.info("Embeddings loaded in %.1fs", time.perf_counter() - t0)
+
+        configs = make_configs(embedding_dim)
+        log.info("%d configs × %d trials = %d runs", len(configs), N_TRIALS, len(configs) * N_TRIALS)
 
         for trial in range(N_TRIALS):
+            trial_t0 = time.perf_counter()
             rng = np.random.default_rng(seed=trial)
             shuffled_emb = rng.permutation(train_emb)
 
-            for name, cls, kwargs in make_configs(embedding_dim):
-                if trial == 0:
-                    print(f"  {name}...")
+            for name, cls, kwargs in configs:
                 adapter = cls(**kwargs)
                 adapter.fit(shuffled_emb)
                 rows.append({
@@ -105,16 +121,19 @@ def main():
                     **evaluate(adapter, test_target, test_other),
                 })
 
+            log.info("Trial %d/%d done in %.1fs", trial + 1, N_TRIALS, time.perf_counter() - trial_t0)
+
+    total_elapsed = time.perf_counter() - total_t0
+    log.info("All experiments completed in %.1fs", total_elapsed)
+
     df = pd.DataFrame(rows)
-    print()
-    print(df.to_string(index=False))
 
     # --- Save results ---
     results_dir = ROOT / "results"
     results_dir.mkdir(exist_ok=True)
     out_path = results_dir / "sweep.parquet"
     df.to_parquet(out_path, index=False)
-    print(f"\nSaved {len(df)} rows to {out_path}")
+    log.info("Saved %d rows to %s", len(df), out_path)
 
     return df
 
