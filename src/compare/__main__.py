@@ -35,7 +35,7 @@ def main():
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
-    N_TRIALS = 10
+    N_TRIALS = 20
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
@@ -47,7 +47,7 @@ def main():
     # with embedding_dim so they can be plotted together.
     # =================================================================
     providers: list[EmbeddingProvider] = [
-        # SpeechEmbeddingProvider(ROOT / "best_32.ckpt", 32, ROOT / "data", device=DEVICE),
+        SpeechEmbeddingProvider(ROOT / "best_32.ckpt", 32, ROOT / "data", device=DEVICE),
         SpeechEmbeddingProvider(ROOT / "best_16.ckpt", 16, ROOT / "data", device=DEVICE),
     ]
 
@@ -75,13 +75,13 @@ def main():
         return [
             *sweep(AutoencoderAdapter, {
                 "train_n": train_n,
-                "epochs": [50, 100],
+                "epochs": [1, 2, 50, 100],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             }),
             *sweep(GMMAdapter, {
                 "train_n": train_n,
-                "n_components": [1, 2],
+                "n_components": [1, 2, 3],
                 "covariance_type": ["diag"],
             }),
             *sweep(KNNAdapter, {

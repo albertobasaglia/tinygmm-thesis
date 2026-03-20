@@ -64,4 +64,6 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_eer": eer,
         "m_threshold": adapter.threshold,
         "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),
+        "m_inference_macs": adapter.inference_macs(),
+        "m_training_macs": adapter.training_macs(),
     }

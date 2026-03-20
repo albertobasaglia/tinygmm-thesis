@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import math
 
 import numpy as np
 import torch
@@ -40,16 +41,25 @@ class Adapter(ABC):
     def predict(self, emb: np.ndarray) -> np.ndarray:
         return self.score(emb) > self.threshold
 
+    @abstractmethod
+    def inference_macs(self) -> int:
+        """MACs to score a single sample."""
+
+    @abstractmethod
+    def training_macs(self) -> int:
+        """Total MACs for the fit() call."""
+
 
 class AutoencoderAdapter(Adapter):
     def __init__(self, input_dim=32, hidden_dim=16, latent_dim=8,
-                 lr=1e-3, epochs=2000, val_frac=0.25, device="cpu", train_n=None):
+                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25, device="cpu", train_n=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.lr = lr
         self.epochs = epochs
+        self.batch_size = batch_size
         self.val_frac = val_frac
         self.device = device
 
@@ -63,7 +73,7 @@ class AutoencoderAdapter(Adapter):
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
-        loader = DataLoader(TensorDataset(train_t), batch_size=8, shuffle=True)
+        loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
         model.train()
         for _ in range(self.epochs):
@@ -83,6 +93,20 @@ class AutoencoderAdapter(Adapter):
         with torch.no_grad():
             recon = self._model(x)
             return torch.mean((x - recon) ** 2, dim=1).cpu().numpy()
+
+    def inference_macs(self) -> int:
+        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
+        linear = D*H + H*L + L*H + H*D
+        mse = D  # subtract, square, accumulate
+        return linear + mse
+
+    def training_macs(self) -> int:
+        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
+        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        F = D*H + H*L + L*H + H*D          # forward linear MACs
+        P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
+        per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
+        return self.epochs * per_epoch
 
 
 class GMMAdapter(Adapter):
@@ -113,6 +137,24 @@ class GMMAdapter(Adapter):
         # Negative log-likelihood: higher = more anomalous
         return -self._gmm.score_samples(emb)
 
+    def inference_macs(self) -> int:
+        D = self._gmm.means_.shape[1]
+        K = self.n_components
+        if self.covariance_type == "diag":
+            return K * 2 * D  # element-wise precision multiply + squared norm
+        return K * (D**2 + D)  # dense mat-vec + squared norm
+
+    def training_macs(self) -> int:
+        D = self._gmm.means_.shape[1]
+        K = self.n_components
+        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        I = self._gmm.n_iter_
+        if self.covariance_type == "diag":
+            per_iter = n_train * K * 4 * D  # E-step (2D) + M-step (2D)
+        else:
+            per_iter = n_train * K * (2 * D**2 + 2 * D)
+        return I * per_iter
+
 
 class KNNAdapter(Adapter):
     def __init__(self, k=5, metric="euclidean", val_frac=0.25, train_n=None):
@@ -136,3 +178,11 @@ class KNNAdapter(Adapter):
         # Distance to k-th nearest neighbor (higher = more anomalous)
         distances, _ = self._nn.kneighbors(emb)
         return distances[:, -1]
+
+    def inference_macs(self) -> int:
+        D = self._nn._fit_X.shape[1]
+        n_stored = self._nn._fit_X.shape[0]
+        return n_stored * 2 * D  # euclidean distance to all stored points
+
+    def training_macs(self) -> int:
+        return 0  # KNN just stores the data
