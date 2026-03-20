@@ -63,4 +63,5 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_auprc": auprc,
         "m_eer": eer,
         "m_threshold": adapter.threshold,
+        "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),
     }
