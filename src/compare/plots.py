@@ -75,34 +75,6 @@ def plot_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     fig.tight_layout()
 
 
-def plot_auc_auprc(df: pd.DataFrame, lines: list[tuple[str, dict]]):
-    """AUC-ROC (solid) and AUPRC (dashed) vs train_n on one figure.
-
-    Plotting both metrics together exposes cases where AUC looks good but
-    AUPRC is poor (e.g. degenerate GMM-full configs with FAR=1).
-
-    Args:
-        df    : results DataFrame
-        lines : list of (label, filter_dict) pairs
-    """
-    fig, ax = plt.subplots()
-    prop_cycle = plt.rcParams["axes.prop_cycle"]
-    colors = [p["color"] for p in prop_cycle]
-
-    for i, (label, where) in enumerate(lines):
-        subset = _filter(df, where)
-        c = colors[i % len(colors)]
-        _plot_line(ax, subset, "p_train_n", "m_auc",   f"{label} AUC-ROC", color=c, linestyle="-")
-        _plot_line(ax, subset, "p_train_n", "m_auprc", f"{label} AUPRC",   color=c, linestyle="--")
-
-    ax.set_xlabel("train_n")
-    ax.set_ylabel("score")
-    ax.set_title("AUC-ROC (—) vs AUPRC (--) by training budget")
-    ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-
 
 def plot_precision_recall_bar(df: pd.DataFrame, train_n: int,
                                lines: list[tuple[str, dict]]):

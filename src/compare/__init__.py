@@ -10,7 +10,6 @@ from .plots import (
     plot_sweep,
     plot_far_recall,
     plot_eer,
-    plot_auc_auprc,
     plot_precision_recall_bar,
     plot_f1,
     plot_eer_by_dim,
