@@ -33,6 +33,11 @@ if __name__ == "__main__":
     dm.setup()
     print(f"[*] {dm.num_classes} classes | {len(dm.train_ds):,} train / {len(dm.val_ds):,} val / {len(dm.test_ds):,} test")
 
+    sample_batch, _ = next(iter(dm.train_dataloader()))
+    print(f"[*] Config  — n_mels={args.n_mels}, embedding_dim={args.embedding_dim}, "
+          f"batch_size={args.batch_size}, lr={args.lr}, epochs={args.epochs}, seed={args.seed}")
+    print(f"[*] Input shape (B, C, mels, time) = {tuple(sample_batch.shape)}")
+
     if args.held_out_words:
         print(f"[*] Held-out words (not in training): {args.held_out_words}")
     module = SpeechExtractorModule(dm.num_classes, args.embedding_dim, args.lr,
