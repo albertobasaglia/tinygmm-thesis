@@ -96,10 +96,9 @@ def plot_precision_recall_bar(df: pd.DataFrame, train_n: int,
             subset = subset[subset[k] == v]
         if subset.empty:
             continue
-        row = subset.iloc[0]
         labels.append(label)
-        precisions.append(row["m_precision"])
-        recalls.append(row["m_recall"])
+        precisions.append(subset["m_precision"].mean())
+        recalls.append(subset["m_recall"].mean())
 
     x = np.arange(len(labels))
     width = 0.35

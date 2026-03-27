@@ -18,19 +18,19 @@ class SpeechEmbeddingProvider(EmbeddingProvider):
         embedding_dim: int,
         data_dir: str | Path,
         target_class: str = "yes",
-        other_class: str = "no",
+        other_classes: list[str] = None,
         device: str = "cpu",
     ):
         self.ckpt_path = Path(ckpt_path)
         self._embedding_dim = embedding_dim
         self.data_dir = str(data_dir)
         self.target_class = target_class
-        self.other_class = other_class
+        self.other_classes = other_classes if other_classes is not None else ["no"]
         self.device = device
 
     @property
     def name(self) -> str:
-        return f"speech_{self._embedding_dim}d"
+        return f"speech_{self._embedding_dim}d_{self.target_class}"
 
     @property
     def embedding_dim(self) -> int:
@@ -47,13 +47,14 @@ class SpeechEmbeddingProvider(EmbeddingProvider):
         specs_target = get_spectrograms(
             self.data_dir, self.target_class, n=test_n, subset="testing"
         )
-        specs_other = get_spectrograms(
-            self.data_dir, self.other_class, n=test_n, subset="testing"
-        )
+        specs_other = torch.cat([
+            get_spectrograms(self.data_dir, cls, n=test_n, subset="testing")
+            for cls in self.other_classes
+        ])
 
         meta = torch.load(self.ckpt_path, weights_only=True)
         held_out = set(meta["hyper_parameters"].get("held_out_words") or [])
-        for cls in (self.target_class, self.other_class):
+        for cls in [self.target_class, *self.other_classes]:
             if cls not in held_out:
                 raise ValueError(
                     f"Class '{cls}' was NOT excluded from feature extractor training "

@@ -35,7 +35,7 @@ def main():
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
-    N_TRIALS = 20
+    N_TRIALS = 1
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
@@ -46,9 +46,17 @@ def main():
     # The sweep runs independently per provider; results are tagged
     # with embedding_dim so they can be plotted together.
     # =================================================================
+    ckpt_path = ROOT / "logs/speech_extractor/version_3/checkpoints/speech_extractor_emb16_seed42.ckpt"
+    meta = torch.load(ckpt_path, weights_only=True)
+    held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
+    log.info("Held-out words from checkpoint: %s", held_out)
+
     providers: list[EmbeddingProvider] = [
-        SpeechEmbeddingProvider(ROOT / "best_32.ckpt", 32, ROOT / "data", device=DEVICE),
-        SpeechEmbeddingProvider(ROOT / "best_16.ckpt", 16, ROOT / "data", device=DEVICE),
+        SpeechEmbeddingProvider(ckpt_path, 16, ROOT / "data",
+                                target_class=w,
+                                other_classes=[o for o in held_out if o != w],
+                                device=DEVICE)
+        for w in held_out
     ]
 
     # =================================================================
@@ -96,7 +104,11 @@ def main():
 
     for provider in providers:
         embedding_dim = provider.embedding_dim
-        log.info("Provider %s (dim=%d)", provider.name, embedding_dim)
+        log.info(
+            "Provider %s (dim=%d) | target=%s  adversarial=%s",
+            provider.name, embedding_dim,
+            provider.target_class, provider.other_classes,
+        )
 
         t0 = time.perf_counter()
         train_emb, test_target, test_other = provider.get_embeddings(max(train_n), TEST_N)
@@ -116,6 +128,8 @@ def main():
                 rows.append({
                     "p_trial": trial,
                     "p_embedding_dim": embedding_dim,
+                    "p_target_class": provider.target_class,
+                    "p_other_classes": "|".join(sorted(provider.other_classes)),
                     "p_adapter": cls.__name__,
                     **{f"p_{k}": v for k, v in kwargs.items()},
                     **evaluate(adapter, test_target, test_other),
