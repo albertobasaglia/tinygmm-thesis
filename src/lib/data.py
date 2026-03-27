@@ -11,8 +11,8 @@ N_SAMPLES   = SAMPLE_RATE  # 1 second
 
 class Preprocess:
     """Picklable transform: waveform → normalized mel spectrogram (1, n_mels, time)."""
-    def __init__(self, n_mels: int = 64):
-        self.mel   = T.MelSpectrogram(sample_rate=SAMPLE_RATE, n_fft=512, hop_length=160, n_mels=n_mels)
+    def __init__(self, n_mels: int = 40):
+        self.mel   = T.MelSpectrogram(sample_rate=SAMPLE_RATE, n_fft=512, hop_length=320, n_mels=n_mels)
         self.to_db = T.AmplitudeToDB()
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -42,7 +42,7 @@ class SpeechCommandsDataset(torch.utils.data.Dataset):
 
 
 class SpeechCommandsDataModule(L.LightningDataModule):
-    def __init__(self, data_dir: str, n_mels: int = 64, batch_size: int = 64,
+    def __init__(self, data_dir: str, n_mels: int = 40, batch_size: int = 64,
                  num_workers: int = 4, held_out_words: list = None):
         super().__init__()
         self.data_dir       = data_dir
@@ -89,7 +89,7 @@ def get_spectrograms(
     target_class: str,
     n: int = 100,
     subset: str = "training",
-    n_mels: int = 64,
+    n_mels: int = 40,
 ) -> torch.Tensor:
     preprocess = Preprocess(n_mels=n_mels)
     raw = torchaudio.datasets.SPEECHCOMMANDS(data_dir, download=False, subset=subset)
