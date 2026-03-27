@@ -4,14 +4,14 @@ import lightning as L
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from lib.models import SpeechExtractorModule
-from lib.data import SpeechCommandsDataModule
+from lib.data import SpeechCommandsDataModule, N_MELS
 
 ROOT = Path(__file__).parent.parent.parent
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Train a speech feature extractor on Google Speech Commands")
 parser.add_argument("--embedding_dim", type=int,   default=32,  help="Embedding vector size")
-parser.add_argument("--n_mels",        type=int,   default=64,  help="Number of mel filterbanks")
+parser.add_argument("--n_mels",        type=int,   default=N_MELS,  help="Number of mel filterbanks")
 parser.add_argument("--epochs",        type=int,   default=50)
 parser.add_argument("--batch_size",    type=int,   default=64)
 parser.add_argument("--lr",            type=float, default=1e-3)
