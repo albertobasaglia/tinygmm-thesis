@@ -63,7 +63,15 @@ class SpeechCommandsDataModule(L.LightningDataModule):
         val_raw   = torchaudio.datasets.SPEECHCOMMANDS(self.data_dir, download=False, subset="validation")
         test_raw  = torchaudio.datasets.SPEECHCOMMANDS(self.data_dir, download=False, subset="testing")
 
+        all_labels_in_dataset = sorted({pathlib.Path(f).parent.name for f in train_raw._walker})
+
         if self.held_out_words:
+            unknown = self.held_out_words - set(all_labels_in_dataset)
+            if unknown:
+                raise ValueError(
+                    f"Unknown held-out word(s): {sorted(unknown)}\n"
+                    f"Valid classes: {all_labels_in_dataset}"
+                )
             for raw in (train_raw, val_raw, test_raw):
                 raw._walker = [f for f in raw._walker
                                if pathlib.Path(f).parent.name not in self.held_out_words]

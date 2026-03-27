@@ -51,6 +51,15 @@ class SpeechEmbeddingProvider(EmbeddingProvider):
             self.data_dir, self.other_class, n=test_n, subset="testing"
         )
 
+        meta = torch.load(self.ckpt_path, weights_only=True)
+        held_out = set(meta["hyper_parameters"].get("held_out_words") or [])
+        for cls in (self.target_class, self.other_class):
+            if cls not in held_out:
+                raise ValueError(
+                    f"Class '{cls}' was NOT excluded from feature extractor training "
+                    f"(held_out_words={held_out}). Sweep results would be invalid."
+                )
+
         extractor = SpeechExtractorModule.load_from_checkpoint(self.ckpt_path)
         extractor.to(self.device).eval()
 
