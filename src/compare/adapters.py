@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 
-from lib.models import SpeechAutoencoder
+from lib.models import SpeechAutoencoder, LinearAutoencoder
 
 
 class Adapter(ABC):
@@ -105,6 +105,66 @@ class AutoencoderAdapter(Adapter):
         n_train = max(1, int(self.train_n * (1 - self.val_frac)))
         F = D*H + H*L + L*H + H*D          # forward linear MACs
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
+        per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
+        return self.epochs * per_epoch
+
+
+class LinearAEAdapter(Adapter):
+    """Linear autoencoder: input_dim → latent_dim → input_dim (no activations)."""
+
+    def __init__(self, input_dim=32, latent_dim=8,
+                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25, device="cpu", train_n=None):
+        super().__init__(train_n)
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.lr = lr
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.val_frac = val_frac
+        self.device = device
+
+    def fit(self, emb: np.ndarray):
+        budget = self._get_budget(emb)
+        split = max(1, int(len(budget) * (1 - self.val_frac)))
+        train_emb, val_emb = budget[:split], budget[split:]
+
+        model = LinearAutoencoder(self.input_dim, self.latent_dim).to(self.device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
+        criterion = nn.MSELoss()
+
+        train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
+        loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
+
+        model.train()
+        for _ in range(self.epochs):
+            for (x,) in loader:
+                optimizer.zero_grad()
+                criterion(model(x), x).backward()
+                optimizer.step()
+
+        model.eval()
+        self._model = model
+
+        val_scores = self.score(val_emb)
+        self.threshold = float(np.percentile(val_scores, 95))
+
+    def score(self, emb: np.ndarray) -> np.ndarray:
+        x = torch.tensor(emb, dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            recon = self._model(x)
+            return torch.mean((x - recon) ** 2, dim=1).cpu().numpy()
+
+    def inference_macs(self) -> int:
+        D, L = self.input_dim, self.latent_dim
+        linear = D*L + L*D  # encoder + decoder
+        mse = D
+        return linear + mse
+
+    def training_macs(self) -> int:
+        D, L = self.input_dim, self.latent_dim
+        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        F = D*L + L*D                      # forward linear MACs
+        P = (D+1)*L + (L+1)*D              # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
         return self.epochs * per_epoch
 

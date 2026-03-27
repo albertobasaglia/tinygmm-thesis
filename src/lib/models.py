@@ -91,6 +91,20 @@ class SpeechAutoencoder(nn.Module):
         return self.decoder(self.encoder(x))
 
 
+class LinearAutoencoder(nn.Module):
+    """
+    Simple linear autoencoder (no hidden layers, no activations).
+    Learns a projection similar to PCA.
+    """
+    def __init__(self, input_dim: int = 32, latent_dim: int = 8):
+        super().__init__()
+        self.encoder = nn.Linear(input_dim, latent_dim)
+        self.decoder = nn.Linear(latent_dim, input_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.decoder(self.encoder(x))
+
+
 class SpeechAnomalyModule(L.LightningModule):
     """
     Trainer for the Autoencoder. 
