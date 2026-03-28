@@ -280,6 +280,59 @@ def plot_lines(df: pd.DataFrame, x: str, y: str,
     fig.tight_layout()
 
 
+def plot_loss_curves(df: pd.DataFrame, lines: list[tuple[str, dict]]):
+    """Training loss at 5 evenly-spaced checkpoints for AE adapters.
+
+    Shows whether the AE has converged or still needs more epochs.
+    X-axis is the fraction of training completed (0.2, 0.4, ..., 1.0).
+    Each line averages over all matching rows (target words, trials, train_n).
+    Filter via the ``where`` dicts to narrow the view.
+    """
+    fig, ax = plt.subplots()
+    fracs = np.linspace(0.2, 1.0, 5)
+    loss_cols = [f"m_loss_{i}" for i in range(1, 6)]
+
+    for label, where in lines:
+        subset = _filter(df, where).dropna(subset=loss_cols, how="all")
+        if subset.empty:
+            continue
+        means = subset[loss_cols].mean().values
+        stds = subset[loss_cols].std().values
+        line, = ax.plot(fracs, means, marker="o", label=label)
+        if not np.all(np.isnan(stds)):
+            ax.fill_between(fracs, means - stds, means + stds,
+                            alpha=0.15, color=line.get_color())
+
+    ax.set_xlabel("Fraction of training completed")
+    ax.set_ylabel("Training loss (MSE)")
+    ax.set_title("AE training convergence")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_loss_vs_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
+    """Scatter of final training loss vs EER.
+
+    Shows whether lower reconstruction loss actually translates to better
+    anomaly detection. If there is no correlation, the reconstruction
+    objective is misaligned with the task.
+    """
+    fig, ax = plt.subplots()
+    for label, where in lines:
+        subset = _filter(df, where).dropna(subset=["m_loss_5"])
+        if subset.empty:
+            continue
+        ax.scatter(subset["m_loss_5"], subset["m_eer"], alpha=0.5, s=30, label=label)
+
+    ax.set_xlabel("Final training loss (MSE)")
+    ax.set_ylabel("EER (lower is better)")
+    ax.set_title("Does lower reconstruction loss → better anomaly detection?")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
 def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
                 x: str = "m_training_macs", y: str = "m_eer"):
     """Scatter plot with Pareto-optimal points highlighted per method.

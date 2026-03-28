@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 
-from lib.models import SpeechAutoencoder, LinearAutoencoder
+from lib.models import SpeechAutoencoder, SmallAutoencoder
 
 
 class Adapter(ABC):
@@ -51,6 +51,8 @@ class Adapter(ABC):
 
 
 class AutoencoderAdapter(Adapter):
+    N_LOSS_CHECKPOINTS = 5
+
     def __init__(self, input_dim=32, hidden_dim=16, latent_dim=8,
                  lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25, device="cpu", train_n=None):
         super().__init__(train_n)
@@ -62,6 +64,7 @@ class AutoencoderAdapter(Adapter):
         self.batch_size = batch_size
         self.val_frac = val_frac
         self.device = device
+        self.loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
@@ -75,12 +78,24 @@ class AutoencoderAdapter(Adapter):
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
+        # Epochs at which to record the training loss (1-indexed, evenly spaced)
+        ckpt_epochs = {
+            round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
+            for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
+        }
+
+        self.loss_checkpoints = []
         model.train()
-        for _ in range(self.epochs):
+        for epoch in range(1, self.epochs + 1):
+            epoch_loss = 0.0
             for (x,) in loader:
                 optimizer.zero_grad()
-                criterion(model(x), x).backward()
+                loss = criterion(model(x), x)
+                loss.backward()
                 optimizer.step()
+                epoch_loss += loss.item() * len(x)
+            if epoch in ckpt_epochs:
+                self.loss_checkpoints.append(epoch_loss / len(train_t))
 
         model.eval()
         self._model = model
@@ -109,8 +124,10 @@ class AutoencoderAdapter(Adapter):
         return self.epochs * per_epoch
 
 
-class LinearAEAdapter(Adapter):
-    """Linear autoencoder: input_dim → latent_dim → input_dim (no activations)."""
+class SmallAEAdapter(Adapter):
+    """Small autoencoder: input_dim → latent_dim (ReLU) → input_dim."""
+
+    N_LOSS_CHECKPOINTS = 5
 
     def __init__(self, input_dim=32, latent_dim=8,
                  lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25, device="cpu", train_n=None):
@@ -122,25 +139,37 @@ class LinearAEAdapter(Adapter):
         self.batch_size = batch_size
         self.val_frac = val_frac
         self.device = device
+        self.loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
         split = max(1, int(len(budget) * (1 - self.val_frac)))
         train_emb, val_emb = budget[:split], budget[split:]
 
-        model = LinearAutoencoder(self.input_dim, self.latent_dim).to(self.device)
+        model = SmallAutoencoder(self.input_dim, self.latent_dim).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
+        ckpt_epochs = {
+            round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
+            for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
+        }
+
+        self.loss_checkpoints = []
         model.train()
-        for _ in range(self.epochs):
+        for epoch in range(1, self.epochs + 1):
+            epoch_loss = 0.0
             for (x,) in loader:
                 optimizer.zero_grad()
-                criterion(model(x), x).backward()
+                loss = criterion(model(x), x)
+                loss.backward()
                 optimizer.step()
+                epoch_loss += loss.item() * len(x)
+            if epoch in ckpt_epochs:
+                self.loss_checkpoints.append(epoch_loss / len(train_t))
 
         model.eval()
         self._model = model

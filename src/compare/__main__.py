@@ -19,7 +19,7 @@ import pandas as pd
 from embeddings.base import EmbeddingProvider
 from embeddings.speech import SpeechEmbeddingProvider
 
-from .adapters import AutoencoderAdapter, LinearAEAdapter, GMMAdapter, KNNAdapter
+from .adapters import AutoencoderAdapter, SmallAEAdapter, GMMAdapter, KNNAdapter
 from .metrics import evaluate
 from .sweep import sweep
 
@@ -90,7 +90,7 @@ def main():
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             }),
-            *sweep(LinearAEAdapter, {
+            *sweep(SmallAEAdapter, {
                 "train_n": train_n,
                 "latent_dim": [4, 8],
                 "epochs": [25, 50, 75, 100],
