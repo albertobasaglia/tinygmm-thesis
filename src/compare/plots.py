@@ -15,6 +15,18 @@ def _agg(df: pd.DataFrame, x: str, y: str) -> pd.DataFrame:
     return df.groupby(x)[y].agg(["mean", "std"]).reset_index().sort_values(x)
 
 
+def _pareto_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Return boolean mask for Pareto-optimal points (lower x, lower y preferred)."""
+    is_pareto = np.ones(len(x), dtype=bool)
+    for i in range(len(x)):
+        # A point is dominated if another point has <= x and <= y, with at least one <
+        dominated = ((x <= x[i]) & (y <= y[i]) & ((x < x[i]) | (y < y[i])))
+        dominated[i] = False  # don't compare with self
+        if dominated.any():
+            is_pareto[i] = False
+    return is_pareto
+
+
 def _plot_line(ax, subset: pd.DataFrame, x: str, y: str, label: str, **kwargs):
     """Plot mean line with ±1 std shaded band."""
     agg = _agg(subset, x, y)
@@ -265,4 +277,49 @@ def plot_lines(df: pd.DataFrame, x: str, y: str,
     ax.set_title(f"{y} vs {x}")
     ax.legend()
     ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
+                x: str = "m_training_macs", y: str = "m_eer"):
+    """Scatter plot with Pareto-optimal points highlighted per method.
+
+    Shows which methods dominate at different MAC budgets. Pareto-optimal
+    points (no other point has both lower MACs AND lower EER) are highlighted
+    with larger markers and connected by lines.
+
+    Args:
+        df    : results DataFrame
+        lines : list of (label, filter_dict) pairs
+        x     : column for x-axis (default: m_training_macs)
+        y     : column for y-axis (default: m_eer, lower is better)
+    """
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for label, where in lines:
+        subset = _filter(df, where)
+        if subset.empty:
+            continue
+
+        # Aggregate by unique (x, y) combinations across trials/configs
+        agg = subset.groupby([x])[y].mean().reset_index()
+        xs, ys = agg[x].values, agg[y].values
+
+        # All points as small markers
+        ax.scatter(xs, ys, alpha=0.4, s=20, label=None)
+
+        # Pareto frontier: larger markers + line
+        pareto = _pareto_mask(xs, ys)
+        if pareto.any():
+            px, py = xs[pareto], ys[pareto]
+            order = np.argsort(px)
+            color = ax.scatter(px, py, s=80, label=label, zorder=3).get_facecolors()[0]
+            ax.plot(px[order], py[order], color=color, linewidth=1.5, alpha=0.7, zorder=2)
+
+    ax.set_xscale("log")
+    ax.set_xlabel("Training MACs")
+    ax.set_ylabel("EER (lower is better)")
+    ax.set_title("Pareto Frontier: EER vs Training MACs")
+    ax.legend()
+    ax.grid(alpha=0.3, which="both")
     fig.tight_layout()

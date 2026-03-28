@@ -19,7 +19,7 @@ import pandas as pd
 from embeddings.base import EmbeddingProvider
 from embeddings.speech import SpeechEmbeddingProvider
 
-from .adapters import AutoencoderAdapter, GMMAdapter, KNNAdapter
+from .adapters import AutoencoderAdapter, LinearAEAdapter, GMMAdapter, KNNAdapter
 from .metrics import evaluate
 from .sweep import sweep
 
@@ -36,6 +36,7 @@ def main():
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
     N_TRIALS = 1
+    MAX_TARGET_WORDS = 5  # limit to first N target words (None = all)
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
@@ -49,7 +50,9 @@ def main():
     ckpt_path = ROOT / "logs/speech_extractor/version_3/checkpoints/speech_extractor_emb16_seed42.ckpt"
     meta = torch.load(ckpt_path, weights_only=True)
     held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
-    log.info("Held-out words from checkpoint: %s", held_out)
+    if MAX_TARGET_WORDS is not None:
+        held_out = held_out[:MAX_TARGET_WORDS]
+    log.info("Target words: %s", held_out)
 
     providers: list[EmbeddingProvider] = [
         SpeechEmbeddingProvider(ckpt_path, 16, ROOT / "data",
@@ -83,7 +86,14 @@ def main():
         return [
             *sweep(AutoencoderAdapter, {
                 "train_n": train_n,
-                "epochs": [1, 2, 50, 100],
+                "epochs": [25, 50, 75, 100],
+                "device": [DEVICE],
+                "input_dim": [embedding_dim],
+            }),
+            *sweep(LinearAEAdapter, {
+                "train_n": train_n,
+                "latent_dim": [4, 8],
+                "epochs": [25, 50, 75, 100],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             }),
