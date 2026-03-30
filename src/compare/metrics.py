@@ -63,7 +63,6 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_auprc": auprc,
         "m_eer": eer,
         "m_threshold": adapter.threshold,
-        "m_bic": getattr(adapter, "bic", None),
         "m_avg_ll": getattr(adapter, "avg_log_likelihood", None),
         "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),
         "m_inference_macs": adapter.inference_macs(),

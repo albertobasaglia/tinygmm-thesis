@@ -37,6 +37,7 @@ def main():
     TEST_N = 500
     N_TRIALS = 10
     MAX_TARGET_WORDS = None  # limit to first N target words (None = all)
+    TEST_WORDS = {"up", "visual", "wow", "yes", "zero"}  # reserved for final evaluation, excluded from sweep
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
@@ -54,7 +55,9 @@ def main():
     held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
     if MAX_TARGET_WORDS is not None:
         held_out = held_out[:MAX_TARGET_WORDS]
-    log.info("Target words: %s", held_out)
+    held_out = [w for w in held_out if w not in TEST_WORDS]
+    log.info("Validation words: %s", held_out)
+    log.info("Test words (excluded): %s", sorted(TEST_WORDS))
 
     providers: list[EmbeddingProvider] = [
         SpeechEmbeddingProvider(ckpt_path, 16, ROOT / "data",

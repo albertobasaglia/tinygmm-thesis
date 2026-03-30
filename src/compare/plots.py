@@ -399,36 +399,6 @@ def plot_gmm_diag_vs_full(df: pd.DataFrame, y: str = "m_eer"):
     fig.tight_layout()
 
 
-def plot_gmm_bic(df: pd.DataFrame, fixed_train_n: int = 45):
-    """BIC vs n_components for each covariance type.
-
-    Classic model selection view — lower BIC is better.  Helps choose K
-    and covariance structure independently of the downstream anomaly metric.
-
-    Args:
-        df            : results DataFrame (must contain m_bic column)
-        fixed_train_n : training budget to slice on
-    """
-    sub = _filter(df, {"p_adapter": "GMMAdapter"})
-    sub = sub[sub["p_train_n"] == fixed_train_n].dropna(subset=["m_bic"])
-
-    fig, ax = plt.subplots()
-    for cov in sorted(sub["p_covariance_type"].unique()):
-        s = sub[sub["p_covariance_type"] == cov]
-        agg = s.groupby("p_n_components")["m_bic"].agg(["mean", "std"]).reset_index()
-        agg = agg.sort_values("p_n_components")
-        line, = ax.plot(agg["p_n_components"], agg["mean"], marker="o", label=cov)
-        if agg["std"].notna().any():
-            ax.fill_between(agg["p_n_components"],
-                            agg["mean"] - agg["std"], agg["mean"] + agg["std"],
-                            alpha=0.15, color=line.get_color())
-
-    ax.set_xlabel("n_components (K)")
-    ax.set_ylabel("BIC (lower is better)")
-    ax.set_title(f"GMM: BIC model selection (train_n={fixed_train_n})")
-    ax.legend(title="covariance")
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
 
 
 def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],

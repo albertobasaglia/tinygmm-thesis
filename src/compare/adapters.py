@@ -219,7 +219,6 @@ class GMMAdapter(Adapter):
         )
         self._gmm.fit(train_emb)
 
-        self.bic = self._gmm.bic(train_emb)
         self.avg_log_likelihood = self._gmm.score(train_emb)
 
         val_scores = self.score(val_emb)
