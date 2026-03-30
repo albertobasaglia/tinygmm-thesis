@@ -23,7 +23,8 @@ parser.add_argument("--data_dir",      type=str,   default=str(ROOT / "data"))
 parser.add_argument("--num_workers",   type=int,   default=4)
 parser.add_argument("--held_out_words", type=str,  nargs="+", default=[],
                     help="Word classes to exclude from training (e.g. --held_out_words yes no wow)")
-parser.add_argument("--resume", default=False, action="store_true")
+parser.add_argument("--resume_from", type=str, default=None, metavar="CKPT",
+                    help="Path to a checkpoint to resume training from (restores epoch, optimizer, LR scheduler)")
 
 args = parser.parse_args()
 
@@ -65,8 +66,7 @@ if __name__ == "__main__":
         deterministic=True,
         logger=logger
     )
-    ckpt_path = "last" if args.resume else None
-    trainer.fit(module, datamodule=dm, ckpt_path=ckpt_path)
+    trainer.fit(module, datamodule=dm, ckpt_path=args.resume_from)
     trainer.test(module, datamodule=dm, ckpt_path="best")
 
     print(f"\nBest checkpoint: {trainer.checkpoint_callback.best_model_path}")
