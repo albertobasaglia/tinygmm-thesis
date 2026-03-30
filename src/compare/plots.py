@@ -333,6 +333,104 @@ def plot_loss_vs_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     fig.tight_layout()
 
 
+def plot_gmm_components(df: pd.DataFrame, y: str = "m_eer",
+                        fixed_train_n: int = 45):
+    """Bar chart: metric vs n_components, grouped by covariance type.
+
+    Shows the optimal number of components for each covariance structure.
+    Only includes GMMAdapter rows.
+
+    Args:
+        df            : results DataFrame
+        y             : metric column (e.g. "m_eer", "m_auc")
+        fixed_train_n : training budget to slice on
+    """
+    sub = _filter(df, {"p_adapter": "GMMAdapter"})
+    sub = sub[sub["p_train_n"] == fixed_train_n]
+
+    fig, ax = plt.subplots()
+    cov_types = sorted(sub["p_covariance_type"].unique())
+    components = sorted(sub["p_n_components"].unique())
+    x = np.arange(len(components))
+    width = 0.8 / max(len(cov_types), 1)
+
+    for i, cov in enumerate(cov_types):
+        means = []
+        stds = []
+        for k in components:
+            vals = sub[(sub["p_n_components"] == k) & (sub["p_covariance_type"] == cov)][y]
+            means.append(vals.mean())
+            stds.append(vals.std())
+        offset = (i - len(cov_types) / 2 + 0.5) * width
+        ax.bar(x + offset, means, width, yerr=stds, capsize=3, label=cov)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"K={k}" for k in components])
+    ax.set_ylabel(y.replace("m_", "").upper())
+    ax.set_title(f"GMM: {y.replace('m_', '')} vs n_components (train_n={fixed_train_n})")
+    ax.legend(title="covariance")
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_gmm_diag_vs_full(df: pd.DataFrame, y: str = "m_eer"):
+    """Line plot: metric vs train_n, one line per (K, covariance_type) pair.
+
+    Shows whether full covariance helps and how it interacts with K.
+
+    Args:
+        df : results DataFrame
+        y  : metric column (e.g. "m_eer", "m_auc")
+    """
+    sub = _filter(df, {"p_adapter": "GMMAdapter"})
+    fig, ax = plt.subplots()
+
+    for cov in sorted(sub["p_covariance_type"].unique()):
+        for k in sorted(sub["p_n_components"].unique()):
+            s = sub[(sub["p_n_components"] == k) & (sub["p_covariance_type"] == cov)]
+            label = f"K={k} {cov}"
+            _plot_line(ax, s, "p_train_n", y, label)
+
+    ax.set_xlabel("train_n")
+    ax.set_ylabel(y.replace("m_", "").upper())
+    ax.set_title(f"GMM: {y.replace('m_', '')} — diag vs full covariance")
+    ax.legend(fontsize=8, ncol=2)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
+def plot_gmm_bic(df: pd.DataFrame, fixed_train_n: int = 45):
+    """BIC vs n_components for each covariance type.
+
+    Classic model selection view — lower BIC is better.  Helps choose K
+    and covariance structure independently of the downstream anomaly metric.
+
+    Args:
+        df            : results DataFrame (must contain m_bic column)
+        fixed_train_n : training budget to slice on
+    """
+    sub = _filter(df, {"p_adapter": "GMMAdapter"})
+    sub = sub[sub["p_train_n"] == fixed_train_n].dropna(subset=["m_bic"])
+
+    fig, ax = plt.subplots()
+    for cov in sorted(sub["p_covariance_type"].unique()):
+        s = sub[sub["p_covariance_type"] == cov]
+        agg = s.groupby("p_n_components")["m_bic"].agg(["mean", "std"]).reset_index()
+        agg = agg.sort_values("p_n_components")
+        line, = ax.plot(agg["p_n_components"], agg["mean"], marker="o", label=cov)
+        if agg["std"].notna().any():
+            ax.fill_between(agg["p_n_components"],
+                            agg["mean"] - agg["std"], agg["mean"] + agg["std"],
+                            alpha=0.15, color=line.get_color())
+
+    ax.set_xlabel("n_components (K)")
+    ax.set_ylabel("BIC (lower is better)")
+    ax.set_title(f"GMM: BIC model selection (train_n={fixed_train_n})")
+    ax.legend(title="covariance")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+
 def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
                 x: str = "m_training_macs", y: str = "m_eer"):
     """Scatter plot with Pareto-optimal points highlighted per method.

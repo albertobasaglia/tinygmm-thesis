@@ -35,8 +35,8 @@ def main():
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
-    N_TRIALS = 1
-    MAX_TARGET_WORDS = 5  # limit to first N target words (None = all)
+    N_TRIALS = 10
+    MAX_TARGET_WORDS = None  # limit to first N target words (None = all)
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # =================================================================
@@ -47,7 +47,9 @@ def main():
     # The sweep runs independently per provider; results are tagged
     # with embedding_dim so they can be plotted together.
     # =================================================================
-    ckpt_path = ROOT / "logs/speech_extractor/version_3/checkpoints/speech_extractor_emb16_seed42.ckpt"
+    # ckpt_path = ROOT / "logs/speech_extractor/version_3/checkpoints/speech_extractor_emb16_seed42.ckpt"
+    # ckpt_path = ROOT / "/Users/alberto/Gits/tinygmm/logs/speech_extractor/version_8/checkpoints/speech_extractor_emb8_seed42.ckpt"
+    ckpt_path = ROOT / "best_16.ckpt"
     meta = torch.load(ckpt_path, weights_only=True)
     held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
     if MAX_TARGET_WORDS is not None:
@@ -80,32 +82,53 @@ def main():
     # NOTE: do not set input_dim in AutoencoderAdapter here — it is
     # injected automatically from the provider's embedding_dim below.
     # =================================================================
-    train_n = list(range(10, 51, 2))
+    # train_n = list(range(10, 51, 2))
+    train_n = list(range(10, 50, 5))
 
     def make_configs(embedding_dim: int) -> list:
         return [
-            *sweep(AutoencoderAdapter, {
-                "train_n": train_n,
-                "epochs": [25, 50, 75, 100],
-                "device": [DEVICE],
-                "input_dim": [embedding_dim],
-            }),
-            *sweep(SmallAEAdapter, {
-                "train_n": train_n,
-                "latent_dim": [4, 8],
-                "epochs": [25, 50, 75, 100],
-                "device": [DEVICE],
-                "input_dim": [embedding_dim],
-            }),
+            # *sweep(AutoencoderAdapter, {
+            #     "train_n": train_n,
+            #     "epochs": [25, 50, 75, 100],
+            #     "device": [DEVICE],
+            #     "input_dim": [embedding_dim],
+            # }),
+            # *sweep(SmallAEAdapter, {
+            #     "train_n": train_n,
+            #     "latent_dim": [4, 8],
+            #     "epochs": [25, 50, 75, 100, 200, 500, 1000],
+            #     "device": [DEVICE],
+            #     "input_dim": [embedding_dim],
+            # }),
+            # *sweep(AutoencoderAdapter, {
+            #     "train_n": train_n,
+            #     "epochs": [10000],
+            #     "device": [DEVICE],
+            #     "input_dim": [embedding_dim],
+            # }),
+            # *sweep(SmallAEAdapter, {
+            #     "train_n": train_n,
+            #     "latent_dim": [8],
+            #     "epochs": [100],
+            #     "device": [DEVICE],
+            #     "input_dim": [embedding_dim],
+            # })
             *sweep(GMMAdapter, {
                 "train_n": train_n,
                 "n_components": [1, 2, 3],
-                "covariance_type": ["diag"],
+                "covariance_type": ["diag", "full"],
             }),
             *sweep(KNNAdapter, {
                 "train_n": train_n,
                 "k": [1, 2],
             }),
+            *sweep(SmallAEAdapter, {
+                "train_n": train_n,
+                "latent_dim": [4],
+                "epochs": [10, 50, 100],
+                "device": [DEVICE],
+                "input_dim": [embedding_dim],
+            })
         ]
 
     # --- Loop over providers ---
@@ -133,6 +156,8 @@ def main():
             shuffled_emb = rng.permutation(train_emb)
 
             for name, cls, kwargs in configs:
+                log.info("Running config '%s'", name)
+                config_t0 = time.perf_counter()
                 adapter = cls(**kwargs)
                 adapter.fit(shuffled_emb)
                 rows.append({
@@ -144,6 +169,9 @@ def main():
                     **{f"p_{k}": v for k, v in kwargs.items()},
                     **evaluate(adapter, test_target, test_other),
                 })
+
+                config_t1 = time.perf_counter()
+                log.info("Config '%s' took %.1fs", name, config_t1 - config_t0)
 
             log.info("Trial %d/%d done in %.1fs", trial + 1, N_TRIALS, time.perf_counter() - trial_t0)
 
