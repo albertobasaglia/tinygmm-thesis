@@ -49,6 +49,14 @@ class Adapter(ABC):
     def training_macs(self) -> int:
         """Total MACs for the fit() call."""
 
+    @abstractmethod
+    def inference_flops(self) -> int:
+        """FLOPs to score a single sample."""
+
+    @abstractmethod
+    def training_flops(self) -> int:
+        """Total FLOPs for the fit() call."""
+
 
 class AutoencoderAdapter(Adapter):
     N_LOSS_CHECKPOINTS = 5
@@ -121,6 +129,36 @@ class AutoencoderAdapter(Adapter):
         F = D*H + H*L + L*H + H*D          # forward linear MACs
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
+        return self.epochs * per_epoch
+
+    def inference_flops(self) -> int:
+        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
+        # Linear layers: 2 FLOPs per MAC (multiply + accumulate)
+        linear = 2 * (D*H + H*L + L*H + H*D)
+        # Bias additions: one add per output unit per layer
+        bias = H + L + H + D
+        # MSE: D subtracts + D squares + (D-1) adds ≈ 3*D
+        mse = 3 * D
+        return linear + bias + mse
+
+    def training_flops(self) -> int:
+        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
+        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        F = D*H + H*L + L*H + H*D              # forward linear MACs
+        B = H + L + H + D                       # bias adds (forward)
+        P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
+        # Forward:  2*F (linear FLOPs) + B (bias) + 3*D (MSE: sub+sq+accum)
+        # Backward: 4*F (linear, ~2x forward) + D (MSE gradient)
+        # Adam per parameter per step: 16 FLOPs
+        #   m = b1*m + (1-b1)*g            -> 3 (2 mul + 1 add)
+        #   v = b2*v + (1-b2)*g^2          -> 4 (1 sq + 2 mul + 1 add)
+        #   m_hat = m/(1-b1^t)             -> 1 (div)
+        #   v_hat = v/(1-b2^t)             -> 1 (div)
+        #   w -= lr*m_hat/(sqrt(v_hat)+e)  -> 5 (sqrt + add + div + mul + sub)
+        #   weight decay: g += wd*w        -> 2 (mul + add)
+        per_sample = 6*F + B + 4*D
+        adam_per_step = 16 * P
+        per_epoch = n_train * per_sample + math.ceil(n_train / self.batch_size) * adam_per_step
         return self.epochs * per_epoch
 
 
@@ -197,6 +235,30 @@ class SmallAEAdapter(Adapter):
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
         return self.epochs * per_epoch
 
+    def inference_flops(self) -> int:
+        D, L = self.input_dim, self.latent_dim
+        # Linear layers: 2 FLOPs per MAC
+        linear = 2 * (D*L + L*D)
+        # Bias additions: one add per output unit per layer
+        bias = L + D
+        # MSE: D subtracts + D squares + (D-1) adds ≈ 3*D
+        mse = 3 * D
+        return linear + bias + mse
+
+    def training_flops(self) -> int:
+        D, L = self.input_dim, self.latent_dim
+        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        F = D*L + L*D                          # forward linear MACs
+        B = L + D                               # bias adds (forward)
+        P = (D+1)*L + (L+1)*D                  # parameters (w+b)
+        # Forward:  2*F (linear FLOPs) + B (bias) + 3*D (MSE)
+        # Backward: 4*F (linear, ~2x forward) + D (MSE gradient)
+        # Adam: 16 FLOPs per parameter per step (see AutoencoderAdapter)
+        per_sample = 6*F + B + 4*D
+        adam_per_step = 16 * P
+        per_epoch = n_train * per_sample + math.ceil(n_train / self.batch_size) * adam_per_step
+        return self.epochs * per_epoch
+
 
 class GMMAdapter(Adapter):
     def __init__(self, n_components=3, covariance_type="full", val_frac=0.25,
@@ -231,6 +293,8 @@ class GMMAdapter(Adapter):
     def inference_macs(self) -> int:
         D = self._gmm.means_.shape[1]
         K = self.n_components
+        if self.covariance_type == "spherical":
+            return K * (D + 1)  # squared norm + scalar multiply
         if self.covariance_type == "diag":
             return K * 2 * D  # element-wise precision multiply + squared norm
         return K * (D**2 + D)  # dense mat-vec + squared norm
@@ -240,11 +304,21 @@ class GMMAdapter(Adapter):
         K = self.n_components
         n_train = max(1, int(self.train_n * (1 - self.val_frac)))
         I = self._gmm.n_iter_
-        if self.covariance_type == "diag":
+        if self.covariance_type == "spherical":
+            per_iter = n_train * K * (2 * D + 2)  # E-step (D+1) + M-step (D+1)
+        elif self.covariance_type == "diag":
             per_iter = n_train * K * 4 * D  # E-step (2D) + M-step (2D)
         else:
             per_iter = n_train * K * (2 * D**2 + 2 * D)
         return I * per_iter
+
+    def inference_flops(self) -> int:
+        # All multiply-accumulate: 2 FLOPs per MAC
+        return 2 * self.inference_macs()
+
+    def training_flops(self) -> int:
+        # EM algorithm is multiply-accumulate dominated: 2 FLOPs per MAC
+        return 2 * self.training_macs()
 
 
 class KNNAdapter(Adapter):
@@ -276,4 +350,11 @@ class KNNAdapter(Adapter):
         return n_stored * 2 * D  # euclidean distance to all stored points
 
     def training_macs(self) -> int:
+        return 0  # KNN just stores the data
+
+    def inference_flops(self) -> int:
+        # Euclidean distance: 2 FLOPs per MAC (multiply + accumulate)
+        return 2 * self.inference_macs()
+
+    def training_flops(self) -> int:
         return 0  # KNN just stores the data

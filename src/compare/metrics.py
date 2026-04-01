@@ -67,6 +67,8 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),
         "m_inference_macs": adapter.inference_macs(),
         "m_training_macs": adapter.training_macs(),
+        "m_inference_flops": adapter.inference_flops(),
+        "m_training_flops": adapter.training_flops(),
         **{
             f"m_loss_{i+1}": v
             for i, v in enumerate(getattr(adapter, "loss_checkpoints", []))
