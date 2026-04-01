@@ -85,8 +85,8 @@ def main():
     # NOTE: do not set input_dim in AutoencoderAdapter here — it is
     # injected automatically from the provider's embedding_dim below.
     # =================================================================
-    # train_n = list(range(10, 51, 2))
-    train_n = list(range(10, 50, 5))
+    # train_n = [5, 10, 20, 50, 100, 200, 500]
+    train_n = list(range(5, 100, 10))
 
     def make_configs(embedding_dim: int) -> list:
         return [
@@ -119,7 +119,7 @@ def main():
             *sweep(GMMAdapter, {
                 "train_n": train_n,
                 "n_components": [1, 2, 3],
-                "covariance_type": ["diag", "full"],
+                "covariance_type": ["diag", "full", "spherical"],
             }),
             *sweep(KNNAdapter, {
                 "train_n": train_n,
