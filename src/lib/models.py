@@ -114,7 +114,6 @@ class SmallAutoencoder(nn.Module):
 class SpeechAnomalyModule(L.LightningModule):
     """
     Trainer for the Autoencoder. 
-    Focuses on Reconstruction Loss (MSE) for One-Class Classification.
     """
     def __init__(self, input_dim: int = 32, hidden_dim: int = 16, latent_dim: int = 8, 
                  lr: float = 1e-3, noise_std: float = 0.02):
