@@ -393,7 +393,7 @@ def plot_gmm_diag_vs_full(df: pd.DataFrame, y: str = "m_eer"):
 
     ax.set_xlabel("train_n")
     ax.set_ylabel(y.replace("m_", "").upper())
-    ax.set_title(f"GMM: {y.replace('m_', '')} — diag vs full covariance")
+    ax.set_title(f"GMM: {y.replace('m_', '')} by covariance type")
     ax.legend(fontsize=8, ncol=2)
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -402,17 +402,17 @@ def plot_gmm_diag_vs_full(df: pd.DataFrame, y: str = "m_eer"):
 
 
 def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
-                x: str = "m_training_macs", y: str = "m_eer"):
+                x: str = "m_training_flops", y: str = "m_eer"):
     """Scatter plot with Pareto-optimal points highlighted per method.
 
-    Shows which methods dominate at different MAC budgets. Pareto-optimal
-    points (no other point has both lower MACs AND lower EER) are highlighted
+    Shows which methods dominate at different FLOPs budgets. Pareto-optimal
+    points (no other point has both lower FLOPs AND lower EER) are highlighted
     with larger markers and connected by lines.
 
     Args:
         df    : results DataFrame
         lines : list of (label, filter_dict) pairs
-        x     : column for x-axis (default: m_training_macs)
+        x     : column for x-axis (default: m_training_flops)
         y     : column for y-axis (default: m_eer, lower is better)
     """
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -426,21 +426,25 @@ def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
         agg = subset.groupby([x])[y].mean().reset_index()
         xs, ys = agg[x].values, agg[y].values
 
+        # Pick a consistent color for this adapter
+        color = ax._get_lines.get_next_color()
+
         # All points as small markers
-        ax.scatter(xs, ys, alpha=0.4, s=20, label=None)
+        ax.scatter(xs, ys, alpha=0.4, s=20, color=color, label=None)
 
         # Pareto frontier: larger markers + line
         pareto = _pareto_mask(xs, ys)
         if pareto.any():
             px, py = xs[pareto], ys[pareto]
             order = np.argsort(px)
-            color = ax.scatter(px, py, s=80, label=label, zorder=3).get_facecolors()[0]
+            ax.scatter(px, py, s=80, color=color, label=label, zorder=3)
             ax.plot(px[order], py[order], color=color, linewidth=1.5, alpha=0.7, zorder=2)
 
     ax.set_xscale("log")
-    ax.set_xlabel("Training MACs")
+    x_label = x.replace("m_", "").replace("_", " ").title()
+    ax.set_xlabel(x_label)
     ax.set_ylabel("EER (lower is better)")
-    ax.set_title("Pareto Frontier: EER vs Training MACs")
+    ax.set_title(f"Pareto Frontier: EER vs {x_label}")
     ax.legend()
     ax.grid(alpha=0.3, which="both")
     fig.tight_layout()
