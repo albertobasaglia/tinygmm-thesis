@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy import stats
 
 
 def _filter(df: pd.DataFrame, where: dict) -> pd.DataFrame:
@@ -11,8 +12,8 @@ def _filter(df: pd.DataFrame, where: dict) -> pd.DataFrame:
 
 
 def _agg(df: pd.DataFrame, x: str, y: str) -> pd.DataFrame:
-    """Group by x, compute mean and std of y (handles single-trial data)."""
-    return df.groupby(x)[y].agg(["mean", "std"]).reset_index().sort_values(x)
+    """Group by x, compute mean, std, and count of y."""
+    return df.groupby(x)[y].agg(["mean", "std", "count"]).reset_index().sort_values(x)
 
 
 def _pareto_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -28,11 +29,14 @@ def _pareto_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 def _plot_line(ax, subset: pd.DataFrame, x: str, y: str, label: str, **kwargs):
-    """Plot mean line with ±1 std shaded band."""
+    """Plot mean line with 95% confidence interval shaded band."""
     agg = _agg(subset, x, y)
     line, = ax.plot(agg[x], agg["mean"], marker="o", label=label, **kwargs)
     if agg["std"].notna().any():
-        ax.fill_between(agg[x], agg["mean"] - agg["std"], agg["mean"] + agg["std"],
+        sem = agg["std"] / np.sqrt(agg["count"])
+        t_crit = stats.t.ppf(0.975, df=agg["count"] - 1)
+        margin = t_crit * sem
+        ax.fill_between(agg[x], agg["mean"] - margin, agg["mean"] + margin,
                          alpha=0.15, color=line.get_color())
 
 
