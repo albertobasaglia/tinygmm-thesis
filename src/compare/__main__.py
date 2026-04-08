@@ -214,7 +214,7 @@ def main():
                 try:
                     adapter.fit(shuffled_emb)
                 except SkipConfig as e:
-                    log.info("Skipping config '%s': %s", name, e)
+                    log.warning("Skipping config '%s': %s", name, e)
                     continue
                 rows.append({
                     **p_row,
