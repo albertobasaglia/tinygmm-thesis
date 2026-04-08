@@ -11,6 +11,11 @@ from sklearn.neighbors import NearestNeighbors
 from lib.models import SpeechAutoencoder, SmallAutoencoder
 
 
+class SkipConfig(Exception):
+    """Raised when a config is invalid for the given parameters."""
+    pass
+
+
 class Adapter(ABC):
     """One-class adapter: fit on target embeddings, score new ones.
 
@@ -333,6 +338,10 @@ class KNNAdapter(Adapter):
         split = max(1, int(len(budget) * (1 - self.val_frac)))
         train_emb, val_emb = budget[:split], budget[split:]
 
+        if self.k > len(train_emb):
+            raise SkipConfig(
+                f"k={self.k} > {len(train_emb)} training samples"
+            )
         self._nn = NearestNeighbors(n_neighbors=self.k, metric=self.metric)
         self._nn.fit(train_emb)
 
