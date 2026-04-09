@@ -299,10 +299,10 @@ class GMMAdapter(Adapter):
         D = self._gmm.means_.shape[1]
         K = self.n_components
         if self.covariance_type == "spherical":
-            return K * (D + 1)  # squared norm + scalar multiply
+            return K * D  # dot product for squared norm
         if self.covariance_type == "diag":
-            return K * 2 * D  # element-wise precision multiply + squared norm
-        return K * (D**2 + D)  # dense mat-vec + squared norm
+            return K * D  # weighted accumulation: prec_i * delta_i^2 summed
+        return K * D**2  # dense precision mat-vec
 
     def training_macs(self) -> int:
         D = self._gmm.means_.shape[1]
@@ -318,8 +318,21 @@ class GMMAdapter(Adapter):
         return I * per_iter
 
     def inference_flops(self) -> int:
-        # All multiply-accumulate: 2 FLOPs per MAC
-        return 2 * self.inference_macs()
+        D = self._gmm.means_.shape[1]
+        K = self.n_components
+        if self.covariance_type == "spherical":
+            # delta = x - mu (D sub), delta^2 (D mul), sum (D-1 add), /var (1 div)
+            return K * (3 * D)
+        if self.covariance_type == "diag":
+            # Per component:
+            #   delta = x - mu:           D subtractions
+            #   delta^2:                  D multiplications
+            #   prec * delta^2:           D multiplications
+            #   sum over D:               (D-1) additions
+            # Total: ~4D FLOPs per component
+            return K * 4 * D
+        # full: delta (D sub), prec @ delta (D^2 mul + D^2 add), dot (D mul + D-1 add)
+        return K * (2 * D**2 + 3 * D)
 
     def training_flops(self) -> int:
         # EM algorithm is multiply-accumulate dominated: 2 FLOPs per MAC

@@ -49,6 +49,13 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     eer_idx = np.argmin(np.abs(fpr - fnr))
     eer = float((fpr[eer_idx] + fnr[eer_idx]) / 2)
 
+    # ACC at target FAR (5%)
+    target_far = 0.05
+    far_idx = np.argmin(np.abs(fpr - target_far))
+    tpr_at_far = tpr[far_idx]
+    fpr_at_far = fpr[far_idx]
+    acc_at_far = (tpr_at_far * n_other + (1 - fpr_at_far) * n_target) / (n_target + n_other)
+
     precision = precision_score(labels, preds, zero_division=0)
     recall = hits / n_other
     f1 = f1_score(labels, preds, zero_division=0)
@@ -62,6 +69,7 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_auc": auc,
         "m_auprc": auprc,
         "m_eer": eer,
+        "m_acc_at_far5": acc_at_far,
         "m_threshold": adapter.threshold,
         "m_avg_ll": getattr(adapter, "avg_log_likelihood", None),
         "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),

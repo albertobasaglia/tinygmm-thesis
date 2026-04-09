@@ -57,7 +57,8 @@ def main():
     TEST_N = 500
     N_TRIALS = 10
     MAX_TARGET_WORDS = None  # limit to first N target words (None = all)
-    TEST_WORDS = {"up", "visual", "wow", "yes", "zero"}  # reserved for final evaluation, excluded from sweep
+    TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final evaluation, excluded from sweep
+
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
     # --- Load existing results (incremental mode) ---
@@ -159,12 +160,12 @@ def main():
             }),
             *sweep(KNNAdapter, {
                 "train_n": train_n,
-                "k": [1, 2, 3, 4, 5],
+                "k": list(range(1, 11, 1)),
             }),
             *sweep(SmallAEAdapter, {
                 "train_n": train_n,
                 "latent_dim": [4],
-                "epochs": [10, 50, 100],
+                "epochs": [10, 20, 30],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             })
