@@ -288,7 +288,7 @@ def plot_loss_curves(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """Training loss at 5 evenly-spaced checkpoints for AE adapters.
 
     Shows whether the AE has converged or still needs more epochs.
-    X-axis is the fraction of training completed (0.2, 0.4, ..., 1.0).
+    X-axis is epoch number (derived from p_epochs * fraction checkpoints).
     Each line averages over all matching rows (target words, trials, train_n).
     Filter via the ``where`` dicts to narrow the view.
     """
@@ -300,14 +300,16 @@ def plot_loss_curves(df: pd.DataFrame, lines: list[tuple[str, dict]]):
         subset = _filter(df, where).dropna(subset=loss_cols, how="all")
         if subset.empty:
             continue
+        epochs = int(subset["p_epochs"].iloc[0]) if "p_epochs" in subset.columns else 1
+        x = fracs * epochs
         means = subset[loss_cols].mean().values
         stds = subset[loss_cols].std().values
-        line, = ax.plot(fracs, means, marker="o", label=label)
+        line, = ax.plot(x, means, marker="o", label=label)
         if not np.all(np.isnan(stds)):
-            ax.fill_between(fracs, means - stds, means + stds,
+            ax.fill_between(x, means - stds, means + stds,
                             alpha=0.15, color=line.get_color())
 
-    ax.set_xlabel("Fraction of training completed")
+    ax.set_xlabel("Epoch")
     ax.set_ylabel("Training loss (MSE)")
     ax.set_title("AE training convergence")
     ax.legend()

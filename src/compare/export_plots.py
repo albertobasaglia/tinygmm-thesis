@@ -71,16 +71,18 @@ def main():
     # ------------------------------------------------------------------
     # Best-of-each configs (from sweep results)
     # ------------------------------------------------------------------
-    GMM_BEST = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
-    KNN_BEST = {"p_adapter": "KNNAdapter", "p_k": 5}
-    AE_BEST  = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}
+    GMM_BEST       = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
+    KNN_BEST       = {"p_adapter": "KNNAdapter", "p_k": 5}
+    AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}
+    AE_CONVERGED   = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}
 
     FIXED_TRAIN_N = 95  # high-budget comparison point
 
     best_lines = [
-        ("GMM K=1 diag", GMM_BEST),
-        ("kNN k=5",      KNN_BEST),
-        ("SmallAE ep=30", AE_BEST),
+        ("GMM K=1 diag",   GMM_BEST),
+        ("kNN k=5",        KNN_BEST),
+        ("SmallAE ep=200", AE_CONVERGED),
+        ("SmallAE ep=30",  AE_BEST),
     ]
 
     # ==================================================================
@@ -132,27 +134,37 @@ def main():
     # ==================================================================
     print("C. Statistical confidence")
 
+    def _ci_plot(ax, metric, sub, lines, xlabel):
+        for i, (label, where) in enumerate(lines):
+            vals = _filter(sub, where)[metric]
+            if vals.empty:
+                continue
+            mean = vals.mean()
+            n = len(vals)
+            sem = vals.std() / np.sqrt(n)
+            t_crit = stats.t.ppf(0.975, df=n - 1)
+            ci = t_crit * sem
+            ax.errorbar(mean, i, xerr=ci, fmt="o", capsize=5, markersize=6)
+            ax.text(mean + ci + 0.005, i, f"{mean:.3f}", va="center", fontsize=9)
+        ax.set_yticks(range(len(lines)))
+        ax.set_yticklabels([c[0] for c in lines])
+        ax.set_xlabel(xlabel)
+        ax.invert_yaxis()
+        ax.grid(axis="x", alpha=0.3)
+
     sub = df[df["p_train_n"] == FIXED_TRAIN_N]
+
     fig, ax = plt.subplots()
-    for i, (label, where) in enumerate(best_lines):
-        vals = _filter(sub, where)["m_eer"]
-        if vals.empty:
-            continue
-        mean = vals.mean()
-        n = len(vals)
-        sem = vals.std() / np.sqrt(n)
-        t_crit = stats.t.ppf(0.975, df=n - 1)
-        ci = t_crit * sem
-        ax.errorbar(mean, i, xerr=ci, fmt="o", capsize=5, markersize=6)
-        ax.text(mean + ci + 0.005, i, f"{mean:.3f}", va="center", fontsize=9)
-    ax.set_yticks(range(len(best_lines)))
-    ax.set_yticklabels([c[0] for c in best_lines])
-    ax.set_xlabel("EER (lower is better)")
+    _ci_plot(ax, "m_eer", sub, best_lines, "EER (lower is better)")
     ax.set_title(f"EER with 95% CI (train_n={FIXED_TRAIN_N})")
-    ax.invert_yaxis()
-    ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
     save("ci_eer")
+
+    fig, ax = plt.subplots()
+    _ci_plot(ax, "m_acc_at_far5", sub, best_lines, "ACC @ FAR=5% (higher is better)")
+    ax.set_title(f"ACC @ FAR=5% with 95% CI (train_n={FIXED_TRAIN_N})")
+    fig.tight_layout()
+    save("ci_acc_at_far5")
 
     # ==================================================================
     # D. AE CONVERGENCE
@@ -160,9 +172,10 @@ def main():
     print("D. AE convergence")
 
     loss_lines = [
-        ("ep=10", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 10}),
-        ("ep=20", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 20}),
-        ("ep=30", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}),
+        ("ep=10",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 10}),
+        ("ep=20",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 20}),
+        ("ep=30",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}),
+        ("ep=200", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}),
     ]
     if "m_loss_1" in df.columns and not _filter(df, {"p_adapter": "SmallAEAdapter"}).empty:
         plot_loss_curves(df, lines=loss_lines)
@@ -262,6 +275,24 @@ def main():
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     save("eer_per_word")
+
+    fig, ax = plt.subplots(figsize=(FULL_W, H + 0.5))
+    for i, (label, where) in enumerate(best_lines):
+        means = [
+            _filter(sub, where).groupby("p_target_class")["m_acc_at_far5"].mean().get(w, float("nan"))
+            for w in words
+        ]
+        offset = (i - len(best_lines) / 2 + 0.5) * width
+        ax.bar(x + offset, means, width=width, label=label)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(words, rotation=30, ha="right")
+    ax.set_ylabel("ACC @ FAR=5%")
+    ax.set_title(f"ACC @ FAR=5% by target word (train_n={FIXED_TRAIN_N})")
+    ax.legend(fontsize=7)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    save("acc_at_far5_per_word")
 
     print("\nDone.")
 

@@ -162,10 +162,14 @@ def main():
                 "train_n": train_n,
                 "k": list(range(1, 11, 1)),
             }),
+            # TODO: add ep=500 (or 1000) to find the true convergence floor.
+            # At ep=200 the loss still drops ~18% in the last 20% of training,
+            # so the AE has not fully converged. If ep=500 EER stays above
+            # GMM's ~0.140, the GMM argument holds unconditionally.
             *sweep(SmallAEAdapter, {
                 "train_n": train_n,
                 "latent_dim": [4],
-                "epochs": [10, 20, 30],
+                "epochs": [10, 20, 30, 200],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             })
