@@ -376,18 +376,19 @@ class GMMAdapter(Adapter):
         D = self._gmm.means_.shape[1]
         K = self.n_components
         if self.covariance_type == "spherical":
-            # delta = x - mu (D sub), delta^2 (D mul), sum (D-1 add), /var (1 div)
-            return K * (3 * D)
-        if self.covariance_type == "diag":
-            # Per component:
-            #   delta = x - mu:           D subtractions
-            #   delta^2:                  D multiplications
-            #   prec * delta^2:           D multiplications
-            #   sum over D:               (D-1) additions
-            # Total: ~4D FLOPs per component
-            return K * 4 * D
-        # full: delta (D sub), prec @ delta (D^2 mul + D^2 add), dot (D mul + D-1 add)
-        return K * (2 * D**2 + 3 * D)
+            # delta = x - mu (D sub), delta^2 (D mul), sum (D-1 add), *prec (1 mul)
+            kernel = K * (3 * D)
+        elif self.covariance_type == "diag":
+            # delta (D sub), delta^2 (D mul), prec*delta^2 (D mul), sum (D-1 add)
+            kernel = K * 4 * D
+        else:
+            # delta (D sub), prec@delta (D^2 mul + D^2 add), dot (D mul + D-1 add)
+            kernel = K * (2 * D**2 + 3 * D)
+        # Per component: log_w - 0.5*maha (1 mul + 1 sub)
+        per_comp = 2 * K
+        # logsumexp: K subs + K exps + (K-1) adds + 1 log + 1 add + 1 neg
+        logsumexp = 3 * K + 1
+        return kernel + per_comp + logsumexp
 
     def training_flops(self) -> int:
         # EM algorithm is multiply-accumulate dominated: 2 FLOPs per MAC
