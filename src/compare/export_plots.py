@@ -25,6 +25,7 @@ from scipy import stats
 from .plots import (
     _filter, _agg, _plot_line,
     plot_eer,
+    plot_far_recall,
     plot_lines,
     plot_gmm_components,
     plot_gmm_diag_vs_full,
@@ -171,13 +172,12 @@ def main():
     # ==================================================================
     print("D. AE convergence")
 
+    # Only plot ep=200: shorter runs would collapse onto the left edge of
+    # the shared x-axis and overlap, making the curves unreadable.
     loss_lines = [
-        ("ep=10",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 10}),
-        ("ep=20",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 20}),
-        ("ep=30",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}),
-        ("ep=200", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}),
+        ("SmallAE ep=200", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}),
     ]
-    if "m_val_loss_1" in df.columns and not _filter(df, {"p_adapter": "SmallAEAdapter"}).empty:
+    if "m_val_loss_1" in df.columns and not _filter(df, loss_lines[0][1]).empty:
         plot_loss_curves(df, lines=loss_lines)
         save("ae_loss_curves")
 
@@ -293,6 +293,119 @@ def main():
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     save("acc_at_far5_per_word")
+
+    # ==================================================================
+    # G. FINAL TEST (held-out TEST_WORDS)
+    # ==================================================================
+    test_path = ROOT / "results" / "test.parquet"
+    if test_path.exists():
+        print("G. Final test")
+        test_df = pd.read_parquet(test_path)
+        print(f"  loaded {len(test_df)} rows | adapters: {test_df['p_adapter'].unique().tolist()}")
+
+        # G1. Summary table (LaTeX)
+        tables_dir = ROOT / "tinygmm-tex" / "tables"
+        tables_dir.mkdir(parents=True, exist_ok=True)
+        metric_labels = {
+            "m_eer": "EER",
+            "m_auc": "AUC",
+            "m_auprc": "AUPRC",
+            "m_f1": "F1",
+            "m_acc_at_far5": "ACC@FAR=5\\%",
+        }
+        metrics = [m for m in metric_labels if m in test_df.columns]
+        adapter_labels = {"GMMAdapter": "GMM K=1 diag", "SmallAEAdapter": "SmallAE ep=200"}
+        agg = test_df.groupby("p_adapter")[metrics].agg(["mean", "std"])
+        col_header = " & ".join(metric_labels[m] for m in metrics)
+        rows = []
+        for adapter_key, label in adapter_labels.items():
+            if adapter_key not in agg.index:
+                continue
+            cells = " & ".join(
+                f"{agg.loc[adapter_key, (m, 'mean')]:.3f} $\\pm$ {agg.loc[adapter_key, (m, 'std')]:.3f}"
+                for m in metrics
+            )
+            rows.append(f"    {label} & {cells} \\\\")
+        n_cols = 1 + len(metrics)
+        col_spec = "l" + "r" * len(metrics)
+        tex = "\n".join([
+            "\\begin{table}[htbp]",
+            "  \\centering",
+            "  \\caption{Final-test metrics on the 5 held-out words"
+            " (mean $\\pm$ std across 5 words $\\times$ 10 trials).}",
+            "  \\label{tab:test_summary}",
+            "  \\resizebox{\\textwidth}{!}{%",
+            f"  \\begin{{tabular}}{{{col_spec}}}",
+            "    \\toprule",
+            f"    Adapter & {col_header} \\\\",
+            "    \\midrule",
+            "\n".join(rows),
+            "    \\bottomrule",
+            "  \\end{tabular}%",
+            "  }",
+            "\\end{table}",
+        ])
+        (tables_dir / "test_summary.tex").write_text(tex + "\n")
+        print("  saved tables/test_summary.tex")
+
+        # G2. EER bar chart with 95% CI
+        adapters = sorted(test_df["p_adapter"].unique())
+        means, margins = [], []
+        for a in adapters:
+            vals = test_df.loc[test_df["p_adapter"] == a, "m_eer"].dropna()
+            n = len(vals)
+            mean = vals.mean()
+            sem = vals.std(ddof=1) / np.sqrt(n)
+            t_crit = stats.t.ppf(0.975, df=n - 1)
+            means.append(mean)
+            margins.append(t_crit * sem)
+        fig, ax = plt.subplots()
+        ax.bar(adapters, means, yerr=margins, capsize=6, color=["#4C72B0", "#DD8452"])
+        ax.set_ylabel("EER")
+        ax.set_title("Final test EER (5 held-out words, 95% CI)")
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        save("test_eer_ci")
+
+        # G3. Paired t-test GMM vs SmallAE (stdout only)
+        if set(adapters) >= {"GMMAdapter", "SmallAEAdapter"}:
+            idx = ["p_trial", "p_target_class"]
+            gmm_eer = test_df[test_df["p_adapter"] == "GMMAdapter"].set_index(idx)["m_eer"]
+            ae_eer = test_df[test_df["p_adapter"] == "SmallAEAdapter"].set_index(idx)["m_eer"]
+            paired = pd.concat([gmm_eer.rename("gmm"), ae_eer.rename("ae")], axis=1).dropna()
+            diff = paired["ae"] - paired["gmm"]
+            t, p = stats.ttest_rel(paired["ae"], paired["gmm"])
+            cohen_d = diff.mean() / diff.std(ddof=1)
+            print(
+                f"  paired t-test (AE - GMM): n={len(paired)}  "
+                f"mean={diff.mean():+.4f}  d={cohen_d:+.3f}  t={t:+.3f}  p={p:.4g}"
+            )
+
+        # G4. EER boxplot
+        data = [test_df.loc[test_df["p_adapter"] == a, "m_eer"].dropna().values for a in adapters]
+        fig, ax = plt.subplots()
+        bp = ax.boxplot(
+            data, tick_labels=adapters, patch_artist=True, showmeans=True,
+            meanprops={"marker": "D", "markerfacecolor": "white", "markeredgecolor": "black"},
+        )
+        for patch, color in zip(bp["boxes"], ["#4C72B0", "#DD8452"]):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.6)
+        ax.set_ylabel("EER")
+        ax.set_title("Final test EER distribution (5 words x 10 trials)")
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        save("test_eer_box")
+
+        # G5. FAR vs Recall scatter
+        test_lines = [
+            ("GMM K=1 diag",   {"p_adapter": "GMMAdapter"}),
+            ("SmallAE ep=200", {"p_adapter": "SmallAEAdapter"}),
+        ]
+        plot_far_recall(test_df, lines=test_lines)
+        save("test_far_recall")
+    else:
+        print(f"G. Final test skipped ({test_path} not found)")
 
     print("\nDone.")
 
