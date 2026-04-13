@@ -67,7 +67,8 @@ class AutoencoderAdapter(Adapter):
     N_LOSS_CHECKPOINTS = 5
 
     def __init__(self, input_dim=32, hidden_dim=16, latent_dim=8,
-                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25, device="cpu", train_n=None):
+                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25,
+                 threshold_mode="val", device="cpu", train_n=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -76,22 +77,29 @@ class AutoencoderAdapter(Adapter):
         self.epochs = epochs
         self.batch_size = batch_size
         self.val_frac = val_frac
+        self.threshold_mode = threshold_mode
         self.device = device
         self.val_loss_checkpoints: list[float] = []
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
-        split = max(1, int(len(budget) * (1 - self.val_frac)))
-        train_emb, val_emb = budget[:split], budget[split:]
+        if self.threshold_mode == "train":
+            train_emb = budget
+            val_emb = None
+        else:
+            split = max(1, int(len(budget) * (1 - self.val_frac)))
+            train_emb, val_emb = budget[:split], budget[split:]
 
         model = SpeechAutoencoder(self.input_dim, self.hidden_dim, self.latent_dim).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
-        val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
+
+        if val_emb is not None:
+            val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
 
         # Epochs at which to record the validation loss (1-indexed, evenly spaced)
         ckpt_epochs = {
@@ -111,17 +119,18 @@ class AutoencoderAdapter(Adapter):
                 optimizer.step()
                 epoch_loss += loss.item() * len(x)
             if epoch in ckpt_epochs:
-                model.eval()
-                with torch.no_grad():
-                    val_loss = criterion(model(val_t), val_t).item()
                 self.train_loss_checkpoints.append(epoch_loss / len(train_t))
-                self.val_loss_checkpoints.append(val_loss)
+                if val_emb is not None:
+                    model.eval()
+                    with torch.no_grad():
+                        val_loss = criterion(model(val_t), val_t).item()
+                    self.val_loss_checkpoints.append(val_loss)
 
         model.eval()
         self._model = model
 
-        val_scores = self.score(val_emb)
-        self.threshold = float(np.percentile(val_scores, 95))
+        threshold_scores = self.score(train_emb if val_emb is None else val_emb)
+        self.threshold = float(np.percentile(threshold_scores, 95))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         x = torch.tensor(emb, dtype=torch.float32, device=self.device)
@@ -137,7 +146,8 @@ class AutoencoderAdapter(Adapter):
 
     def training_macs(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
+        n_train = max(1, int(self.train_n * (1 - frac)))
         F = D*H + H*L + L*H + H*D          # forward linear MACs
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
@@ -155,7 +165,8 @@ class AutoencoderAdapter(Adapter):
 
     def training_flops(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
+        n_train = max(1, int(self.train_n * (1 - frac)))
         F = D*H + H*L + L*H + H*D              # forward linear MACs
         B = H + L + H + D                       # bias adds (forward)
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
@@ -181,7 +192,7 @@ class SmallAEAdapter(Adapter):
 
     def __init__(self, input_dim=32, latent_dim=8,
                  lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25,
-                 dropout_p=0.0, device="cpu", train_n=None):
+                 threshold_mode="val", dropout_p=0.0, device="cpu", train_n=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -189,6 +200,7 @@ class SmallAEAdapter(Adapter):
         self.epochs = epochs
         self.batch_size = batch_size
         self.val_frac = val_frac
+        self.threshold_mode = threshold_mode
         self.dropout_p = dropout_p
         self.device = device
         self.val_loss_checkpoints: list[float] = []
@@ -196,16 +208,22 @@ class SmallAEAdapter(Adapter):
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
-        split = max(1, int(len(budget) * (1 - self.val_frac)))
-        train_emb, val_emb = budget[:split], budget[split:]
+        if self.threshold_mode == "train":
+            train_emb = budget
+            val_emb = None
+        else:
+            split = max(1, int(len(budget) * (1 - self.val_frac)))
+            train_emb, val_emb = budget[:split], budget[split:]
 
         model = SmallAutoencoder(self.input_dim, self.latent_dim, self.dropout_p).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
-        val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
+
+        if val_emb is not None:
+            val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
 
         ckpt_epochs = {
             round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
@@ -224,17 +242,18 @@ class SmallAEAdapter(Adapter):
                 optimizer.step()
                 epoch_loss += loss.item() * len(x)
             if epoch in ckpt_epochs:
-                model.eval()
-                with torch.no_grad():
-                    val_loss = criterion(model(val_t), val_t).item()
                 self.train_loss_checkpoints.append(epoch_loss / len(train_t))
-                self.val_loss_checkpoints.append(val_loss)
+                if val_emb is not None:
+                    model.eval()
+                    with torch.no_grad():
+                        val_loss = criterion(model(val_t), val_t).item()
+                    self.val_loss_checkpoints.append(val_loss)
 
         model.eval()
         self._model = model
 
-        val_scores = self.score(val_emb)
-        self.threshold = float(np.percentile(val_scores, 95))
+        threshold_scores = self.score(train_emb if val_emb is None else val_emb)
+        self.threshold = float(np.percentile(threshold_scores, 95))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         x = torch.tensor(emb, dtype=torch.float32, device=self.device)
@@ -250,7 +269,8 @@ class SmallAEAdapter(Adapter):
 
     def training_macs(self) -> int:
         D, L = self.input_dim, self.latent_dim
-        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
+        n_train = max(1, int(self.train_n * (1 - frac)))
         F = D*L + L*D                      # forward linear MACs
         P = (D+1)*L + (L+1)*D              # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
@@ -268,7 +288,8 @@ class SmallAEAdapter(Adapter):
 
     def training_flops(self) -> int:
         D, L = self.input_dim, self.latent_dim
-        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
+        n_train = max(1, int(self.train_n * (1 - frac)))
         F = D*L + L*D                          # forward linear MACs
         B = L + D                               # bias adds (forward)
         P = (D+1)*L + (L+1)*D                  # parameters (w+b)

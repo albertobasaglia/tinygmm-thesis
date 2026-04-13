@@ -55,8 +55,8 @@ def main():
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
-    N_TRIALS = 10
-    MAX_TARGET_WORDS = None  # limit to first N target words (None = all)
+    N_TRIALS = 5
+    MAX_TARGET_WORDS = 2  # limit to first N target words (None = all)
     TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final evaluation, excluded from sweep
 
     ROOT = Path(__file__).parent.parent.parent   # repo root
@@ -169,7 +169,8 @@ def main():
             *sweep(SmallAEAdapter, {
                 "train_n": train_n,
                 "latent_dim": [4],
-                "epochs": [10, 20, 30, 200],
+                "epochs": [10, 20, 30],
+                "threshold_mode": ["val", "train"],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             })
