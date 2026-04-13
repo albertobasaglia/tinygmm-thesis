@@ -294,24 +294,36 @@ def plot_loss_curves(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     fracs = np.linspace(0.2, 1.0, 5)
-    loss_cols = [f"m_loss_{i}" for i in range(1, 6)]
+    train_cols = [f"m_train_loss_{i}" for i in range(1, 6)]
+    val_cols = [f"m_val_loss_{i}" for i in range(1, 6)]
 
     for label, where in lines:
-        subset = _filter(df, where).dropna(subset=loss_cols, how="all")
+        subset = _filter(df, where).dropna(subset=train_cols, how="all")
         if subset.empty:
             continue
         epochs = int(subset["p_epochs"].iloc[0]) if "p_epochs" in subset.columns else 1
         x = fracs * epochs
-        means = subset[loss_cols].mean().values
-        stds = subset[loss_cols].std().values
-        line, = ax.plot(x, means, marker="o", label=label)
-        if not np.all(np.isnan(stds)):
-            ax.fill_between(x, means - stds, means + stds,
-                            alpha=0.15, color=line.get_color())
+
+        train_means = subset[train_cols].mean().values
+        train_stds = subset[train_cols].std().values
+        line, = ax.plot(x, train_means, marker="o", label=f"{label} train")
+        color = line.get_color()
+        if not np.all(np.isnan(train_stds)):
+            ax.fill_between(x, train_means - train_stds, train_means + train_stds,
+                            alpha=0.15, color=color)
+
+        if all(c in subset.columns for c in val_cols):
+            val_means = subset[val_cols].mean().values
+            val_stds = subset[val_cols].std().values
+            ax.plot(x, val_means, marker="s", linestyle="--",
+                    color=color, label=f"{label} val")
+            if not np.all(np.isnan(val_stds)):
+                ax.fill_between(x, val_means - val_stds, val_means + val_stds,
+                                alpha=0.10, color=color)
 
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Training loss (MSE)")
-    ax.set_title("AE training convergence")
+    ax.set_ylabel("Loss (MSE)")
+    ax.set_title("AE training vs validation loss")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -326,10 +338,10 @@ def plot_loss_vs_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        subset = _filter(df, where).dropna(subset=["m_loss_5"])
+        subset = _filter(df, where).dropna(subset=["m_train_loss_5"])
         if subset.empty:
             continue
-        ax.scatter(subset["m_loss_5"], subset["m_eer"], alpha=0.5, s=30, label=label)
+        ax.scatter(subset["m_train_loss_5"], subset["m_eer"], alpha=0.5, s=30, label=label)
 
     ax.set_xlabel("Final training loss (MSE)")
     ax.set_ylabel("EER (lower is better)")

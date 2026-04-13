@@ -77,7 +77,8 @@ class AutoencoderAdapter(Adapter):
         self.batch_size = batch_size
         self.val_frac = val_frac
         self.device = device
-        self.loss_checkpoints: list[float] = []
+        self.val_loss_checkpoints: list[float] = []
+        self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
@@ -89,17 +90,19 @@ class AutoencoderAdapter(Adapter):
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
+        val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
-        # Epochs at which to record the training loss (1-indexed, evenly spaced)
+        # Epochs at which to record the validation loss (1-indexed, evenly spaced)
         ckpt_epochs = {
             round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
             for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
         }
 
-        self.loss_checkpoints = []
-        model.train()
+        self.val_loss_checkpoints = []
+        self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
+            model.train()
             epoch_loss = 0.0
             for (x,) in loader:
                 optimizer.zero_grad()
@@ -108,7 +111,11 @@ class AutoencoderAdapter(Adapter):
                 optimizer.step()
                 epoch_loss += loss.item() * len(x)
             if epoch in ckpt_epochs:
-                self.loss_checkpoints.append(epoch_loss / len(train_t))
+                model.eval()
+                with torch.no_grad():
+                    val_loss = criterion(model(val_t), val_t).item()
+                self.train_loss_checkpoints.append(epoch_loss / len(train_t))
+                self.val_loss_checkpoints.append(val_loss)
 
         model.eval()
         self._model = model
@@ -182,7 +189,8 @@ class SmallAEAdapter(Adapter):
         self.batch_size = batch_size
         self.val_frac = val_frac
         self.device = device
-        self.loss_checkpoints: list[float] = []
+        self.val_loss_checkpoints: list[float] = []
+        self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
@@ -194,6 +202,7 @@ class SmallAEAdapter(Adapter):
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
+        val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
         ckpt_epochs = {
@@ -201,9 +210,10 @@ class SmallAEAdapter(Adapter):
             for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
         }
 
-        self.loss_checkpoints = []
-        model.train()
+        self.val_loss_checkpoints = []
+        self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
+            model.train()
             epoch_loss = 0.0
             for (x,) in loader:
                 optimizer.zero_grad()
@@ -212,7 +222,11 @@ class SmallAEAdapter(Adapter):
                 optimizer.step()
                 epoch_loss += loss.item() * len(x)
             if epoch in ckpt_epochs:
-                self.loss_checkpoints.append(epoch_loss / len(train_t))
+                model.eval()
+                with torch.no_grad():
+                    val_loss = criterion(model(val_t), val_t).item()
+                self.train_loss_checkpoints.append(epoch_loss / len(train_t))
+                self.val_loss_checkpoints.append(val_loss)
 
         model.eval()
         self._model = model

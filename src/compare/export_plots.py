@@ -177,7 +177,7 @@ def main():
         ("ep=30",  {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}),
         ("ep=200", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}),
     ]
-    if "m_loss_1" in df.columns and not _filter(df, {"p_adapter": "SmallAEAdapter"}).empty:
+    if "m_val_loss_1" in df.columns and not _filter(df, {"p_adapter": "SmallAEAdapter"}).empty:
         plot_loss_curves(df, lines=loss_lines)
         save("ae_loss_curves")
 
