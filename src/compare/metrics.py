@@ -44,10 +44,11 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     auprc = average_precision_score(labels, scores)
 
     # EER: operating point where FAR == FRR (1 - recall)
-    fpr, tpr, _ = roc_curve(labels, scores)
+    fpr, tpr, thresholds = roc_curve(labels, scores)
     fnr = 1 - tpr
     eer_idx = np.argmin(np.abs(fpr - fnr))
     eer = float((fpr[eer_idx] + fnr[eer_idx]) / 2)
+    threshold_eer = float(thresholds[eer_idx])
 
     # ACC at target FAR (5%)
     target_far = 0.05
@@ -55,6 +56,7 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     tpr_at_far = tpr[far_idx]
     fpr_at_far = fpr[far_idx]
     acc_at_far = (tpr_at_far * n_other + (1 - fpr_at_far) * n_target) / (n_target + n_other)
+    threshold_at_far5 = float(thresholds[far_idx])
 
     precision = precision_score(labels, preds, zero_division=0)
     recall = hits / n_other
@@ -71,6 +73,8 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_eer": eer,
         "m_acc_at_far5": acc_at_far,
         "m_threshold": adapter.threshold,
+        "m_threshold_eer": threshold_eer,
+        "m_threshold_at_far5": threshold_at_far5,
         "m_avg_ll": getattr(adapter, "avg_log_likelihood", None),
         "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),
         "m_inference_macs": adapter.inference_macs(),
