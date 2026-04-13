@@ -60,8 +60,8 @@ def main():
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
-    N_TRIALS = 5
-    MAX_TARGET_WORDS = 2  # limit to first N target words (None = all)
+    N_TRIALS = 10
+    MAX_TARGET_WORDS = None  # limit to first N target words (None = all)
     TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final evaluation, excluded from sweep
 
     ROOT = Path(__file__).parent.parent.parent   # repo root
@@ -174,8 +174,9 @@ def main():
             *sweep(SmallAEAdapter, {
                 "train_n": train_n,
                 "latent_dim": [4],
-                "epochs": [10, 20, 30],
+                "epochs": [30],
                 "threshold_mode": ["val", "train"],
+                "dropout_p": [0.0, 0.2],
                 "device": [DEVICE],
                 "input_dim": [embedding_dim],
             })
@@ -219,7 +220,8 @@ def main():
                     **{f"p_{k}": v for k, v in kwargs.items()},
                 }
 
-                if p_cols and _make_key(p_row, p_cols) in existing_keys:
+                new_keys = set(p_row.keys()) - set(p_cols)
+                if p_cols and not new_keys and _make_key(p_row, p_cols) in existing_keys:
                     log.debug("Skipping existing config '%s' trial %d", name, trial)
                     continue
 
