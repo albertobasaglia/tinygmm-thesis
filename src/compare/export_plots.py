@@ -74,16 +74,15 @@ def main():
     # ------------------------------------------------------------------
     GMM_BEST       = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
     KNN_BEST       = {"p_adapter": "KNNAdapter", "p_k": 5}
-    AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30}
-    AE_CONVERGED   = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}
+    AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                      "p_dropout_p": 0.2, "p_threshold_mode": "train"}
 
-    FIXED_TRAIN_N = 95  # high-budget comparison point
+    FIXED_TRAIN_N = 45  # mid-budget comparison point (few-shot regime)
 
     best_lines = [
-        ("GMM K=1 diag",   GMM_BEST),
-        ("kNN k=5",        KNN_BEST),
-        ("SmallAE ep=200", AE_CONVERGED),
-        ("SmallAE ep=30",  AE_BEST),
+        ("GMM K=1 diag", GMM_BEST),
+        ("kNN k=5",      KNN_BEST),
+        ("SmallAE",      AE_BEST),
     ]
 
     # ==================================================================
@@ -113,6 +112,28 @@ def main():
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     save("knn_k_selection")
+
+    # A4. AE threshold-mode ablation (pin dropout_p=0.2)
+    threshold_lines = [
+        ("AE threshold=val",   {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                                "p_dropout_p": 0.2, "p_threshold_mode": "val"}),
+        ("AE threshold=train", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                                "p_dropout_p": 0.2, "p_threshold_mode": "train"}),
+    ]
+    plot_eer(df, lines=threshold_lines)
+    plt.title("AE threshold-mode ablation (dropout_p=0.2)")
+    save("ae_threshold_mode_eer")
+
+    # A5. AE dropout ablation (pin threshold_mode=train)
+    dropout_lines = [
+        ("AE no-dropout",    {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                              "p_dropout_p": 0.0, "p_threshold_mode": "train"}),
+        ("AE dropout_p=0.2", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                              "p_dropout_p": 0.2, "p_threshold_mode": "train"}),
+    ]
+    plot_eer(df, lines=dropout_lines)
+    plt.title("AE dropout ablation (threshold_mode=train)")
+    save("ae_dropout_eer")
 
     # ==================================================================
     # B. MAIN COMPARISON (best-of-each)
