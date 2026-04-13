@@ -180,7 +180,8 @@ class SmallAEAdapter(Adapter):
     N_LOSS_CHECKPOINTS = 5
 
     def __init__(self, input_dim=32, latent_dim=8,
-                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25, device="cpu", train_n=None):
+                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25,
+                 dropout_p=0.0, device="cpu", train_n=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -188,6 +189,7 @@ class SmallAEAdapter(Adapter):
         self.epochs = epochs
         self.batch_size = batch_size
         self.val_frac = val_frac
+        self.dropout_p = dropout_p
         self.device = device
         self.val_loss_checkpoints: list[float] = []
         self.train_loss_checkpoints: list[float] = []
@@ -197,7 +199,7 @@ class SmallAEAdapter(Adapter):
         split = max(1, int(len(budget) * (1 - self.val_frac)))
         train_emb, val_emb = budget[:split], budget[split:]
 
-        model = SmallAutoencoder(self.input_dim, self.latent_dim).to(self.device)
+        model = SmallAutoencoder(self.input_dim, self.latent_dim, self.dropout_p).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
 

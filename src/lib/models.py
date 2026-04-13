@@ -97,10 +97,12 @@ class SpeechAutoencoder(nn.Module):
 
 class SmallAutoencoder(nn.Module):
     """
-    Small autoencoder.
+    Small Denoising Autoencoder.
+    dropout_p=0.0 disables denoising (standard AE behaviour).
     """
-    def __init__(self, input_dim: int = 32, latent_dim: int = 8):
+    def __init__(self, input_dim: int = 32, latent_dim: int = 8, dropout_p: float = 0.0):
         super().__init__()
+        self.dropout = nn.Dropout(p=dropout_p)
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, latent_dim),
             nn.ReLU(),
@@ -108,7 +110,7 @@ class SmallAutoencoder(nn.Module):
         self.decoder = nn.Linear(latent_dim, input_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.decoder(self.encoder(x))
+        return self.decoder(self.encoder(self.dropout(x)))
 
 
 class SpeechAnomalyModule(L.LightningModule):
