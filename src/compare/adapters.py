@@ -111,15 +111,16 @@ class AutoencoderAdapter(Adapter):
         self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
             model.train()
-            epoch_loss = 0.0
+            epoch_loss = train_t.new_zeros(())
             for (x,) in loader:
                 optimizer.zero_grad()
                 loss = criterion(model(x), x)
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item() * len(x)
+                with torch.no_grad():
+                    epoch_loss += loss * len(x)
             if epoch in ckpt_epochs:
-                self.train_loss_checkpoints.append(epoch_loss / len(train_t))
+                self.train_loss_checkpoints.append((epoch_loss / len(train_t)).item())
                 if val_emb is not None:
                     model.eval()
                     with torch.no_grad():
@@ -234,15 +235,16 @@ class SmallAEAdapter(Adapter):
         self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
             model.train()
-            epoch_loss = 0.0
+            epoch_loss = train_t.new_zeros(())
             for (x,) in loader:
                 optimizer.zero_grad()
                 loss = criterion(model(x), x)
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item() * len(x)
+                with torch.no_grad():
+                    epoch_loss += loss * len(x)
             if epoch in ckpt_epochs:
-                self.train_loss_checkpoints.append(epoch_loss / len(train_t))
+                self.train_loss_checkpoints.append((epoch_loss / len(train_t)).item())
                 if val_emb is not None:
                     model.eval()
                     with torch.no_grad():
