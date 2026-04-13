@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,10 @@ from lib.models import SpeechExtractorModule
 from lib.data import get_spectrograms
 
 from .base import EmbeddingProvider
+
+log = logging.getLogger(__name__)
+
+_CACHE_DIR = Path(__file__).parent.parent.parent / "cache" / "embeddings"
 
 
 class SpeechEmbeddingProvider(EmbeddingProvider):
@@ -36,11 +41,20 @@ class SpeechEmbeddingProvider(EmbeddingProvider):
     def embedding_dim(self) -> int:
         return self._embedding_dim
 
+    def _cache_path(self, train_n: int, test_n: int) -> Path:
+        others = "_".join(sorted(self.other_classes))
+        key = f"{self.ckpt_path.stem}__{self.target_class}__{others}__train{train_n}_test{test_n}.npz"
+        return _CACHE_DIR / key
+
     def get_embeddings(
         self, train_n: int, test_n: int
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        # TODO: cache spectrograms so multiple providers sharing the same
-        #       dataset don't reload and preprocess the same audio files.
+        cache_path = self._cache_path(train_n, test_n)
+        if cache_path.exists():
+            log.info("Loading embeddings from cache: %s", cache_path.name)
+            data = np.load(cache_path)
+            return data["train_emb"], data["test_target"], data["test_other"]
+
         specs_train = get_spectrograms(
             self.data_dir, self.target_class, n=train_n, subset="training"
         )
@@ -68,5 +82,9 @@ class SpeechEmbeddingProvider(EmbeddingProvider):
             train_emb = extractor(specs_train.to(self.device), return_embedding=True).cpu().numpy()
             test_target = extractor(specs_target.to(self.device), return_embedding=True).cpu().numpy()
             test_other = extractor(specs_other.to(self.device), return_embedding=True).cpu().numpy()
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(cache_path, train_emb=train_emb, test_target=test_target, test_other=test_other)
+        log.info("Embeddings cached to: %s", cache_path.name)
 
         return train_emb, test_target, test_other

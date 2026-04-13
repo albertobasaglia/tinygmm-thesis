@@ -8,7 +8,10 @@ Edit CHECKPOINTS and make_configs() to control what gets compared.
 Results are saved as a Parquet file in results/.
 """
 
+import cProfile
+import io
 import logging
+import pstats
 import time
 from pathlib import Path
 
@@ -47,8 +50,10 @@ def _make_key(p_row: dict, p_cols: list[str]) -> tuple:
 
 
 def main():
+    PROFILE = False   # set True to run cProfile and dump results/profile.prof
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if PROFILE else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
@@ -180,6 +185,10 @@ def main():
     rows = []
     total_t0 = time.perf_counter()
 
+    if PROFILE:
+        _pr = cProfile.Profile()
+        _pr.enable()
+
     for provider in providers:
         embedding_dim = provider.embedding_dim
         log.info(
@@ -234,6 +243,15 @@ def main():
 
     total_elapsed = time.perf_counter() - total_t0
     log.info("All experiments completed in %.1fs", total_elapsed)
+
+    if PROFILE:
+        _pr.disable()
+        s = io.StringIO()
+        pstats.Stats(_pr, stream=s).sort_stats("cumulative").print_stats(40)
+        print(s.getvalue())
+        prof_path = Path(__file__).parent.parent.parent / "results" / "profile.prof"
+        _pr.dump_stats(prof_path)
+        log.info("Profile saved to %s", prof_path)
 
     new_df = pd.DataFrame(rows)
     if not existing_df.empty and not new_df.empty:

@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+import logging
 import math
+import time
 
 import numpy as np
 import torch
@@ -9,6 +11,8 @@ from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 
 from lib.models import SpeechAutoencoder, SmallAutoencoder
+
+log = logging.getLogger(__name__)
 
 
 class SkipConfig(Exception):
@@ -83,6 +87,7 @@ class AutoencoderAdapter(Adapter):
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
+        _t0 = time.perf_counter()
         budget = self._get_budget(emb)
         if self.threshold_mode == "train":
             train_emb = budget
@@ -107,6 +112,7 @@ class AutoencoderAdapter(Adapter):
             for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
         }
 
+        _t1 = time.perf_counter()
         self.val_loss_checkpoints = []
         self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
@@ -129,9 +135,13 @@ class AutoencoderAdapter(Adapter):
 
         model.eval()
         self._model = model
+        _t2 = time.perf_counter()
 
         threshold_scores = self.score(train_emb if val_emb is None else val_emb)
         self.threshold = float(np.percentile(threshold_scores, 95))
+        _t3 = time.perf_counter()
+        log.debug("AutoencoderAdapter fit: setup=%.3fs  train=%.3fs  threshold=%.3fs  total=%.3fs",
+                  _t1 - _t0, _t2 - _t1, _t3 - _t2, _t3 - _t0)
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         x = torch.tensor(emb, dtype=torch.float32, device=self.device)
@@ -208,6 +218,7 @@ class SmallAEAdapter(Adapter):
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
+        _t0 = time.perf_counter()
         budget = self._get_budget(emb)
         if self.threshold_mode == "train":
             train_emb = budget
@@ -231,6 +242,7 @@ class SmallAEAdapter(Adapter):
             for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
         }
 
+        _t1 = time.perf_counter()
         self.val_loss_checkpoints = []
         self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
@@ -253,9 +265,13 @@ class SmallAEAdapter(Adapter):
 
         model.eval()
         self._model = model
+        _t2 = time.perf_counter()
 
         threshold_scores = self.score(train_emb if val_emb is None else val_emb)
         self.threshold = float(np.percentile(threshold_scores, 95))
+        _t3 = time.perf_counter()
+        log.debug("SmallAEAdapter fit: setup=%.3fs  train=%.3fs  threshold=%.3fs  total=%.3fs",
+                  _t1 - _t0, _t2 - _t1, _t3 - _t2, _t3 - _t0)
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         x = torch.tensor(emb, dtype=torch.float32, device=self.device)
