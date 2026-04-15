@@ -29,28 +29,30 @@ from .sweep import sweep
 log = logging.getLogger(__name__)
 
 
-def _existing_keys(df: pd.DataFrame) -> tuple[set[tuple], list[str]]:
-    """Build a set of p_-column tuples for O(1) duplicate lookup.
-
-    Returns (key_set, p_cols) where p_cols is the sorted list of
-    p_-prefixed column names used to build each tuple.
+def _upsert(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge new_df into existing_df; new rows overwrite existing rows
+    sharing the same p_-prefixed parameter columns.
     """
-    if df.empty:
-        return set(), []
-    p_cols = sorted(c for c in df.columns if c.startswith("p_"))
-    keys = set(
-        df[p_cols].fillna("__NA__").itertuples(index=False, name=None)
+    if existing_df.empty:
+        return new_df
+    if new_df.empty:
+        return existing_df
+
+    p_cols = sorted(
+        set(c for c in existing_df.columns if c.startswith("p_"))
+        | set(c for c in new_df.columns if c.startswith("p_"))
     )
-    return keys, p_cols
-
-
-def _make_key(p_row: dict, p_cols: list[str]) -> tuple:
-    """Build a lookup tuple matching the column order from _existing_keys."""
-    return tuple(p_row.get(c, "__NA__") for c in p_cols)
+    combined = pd.concat([existing_df, new_df], ignore_index=True)
+    # keep last occurrence => new rows overwrite existing ones
+    filled = combined[p_cols].fillna("__NA__")
+    mask = ~filled.duplicated(keep="last")
+    return combined[mask].reset_index(drop=True)
 
 
 def main():
     PROFILE = False   # set True to run cProfile and dump results/profile.prof
+    OVERWRITE = True  # True: run all configs and overwrite matching historical rows
+                      # False: skip configs whose params already exist in the parquet
 
     logging.basicConfig(
         level=logging.DEBUG if PROFILE else logging.INFO,
@@ -78,9 +80,18 @@ def main():
         existing_df = pd.DataFrame()
     else:
         existing_df = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
-    existing_keys, p_cols = _existing_keys(existing_df)
-    if existing_keys:
+    if not existing_df.empty:
         log.info("Loaded %d existing rows from %s", len(existing_df), out_path)
+
+    # Pre-compute skip lookup only when NOT overwriting
+    if not OVERWRITE and not existing_df.empty:
+        skip_p_cols = sorted(c for c in existing_df.columns if c.startswith("p_"))
+        skip_keys = set(
+            existing_df[skip_p_cols].fillna("__NA__").itertuples(index=False, name=None)
+        )
+    else:
+        skip_p_cols = []
+        skip_keys = set()
 
     # =================================================================
     # EMBEDDING PROVIDERS
@@ -220,10 +231,13 @@ def main():
                     **{f"p_{k}": v for k, v in kwargs.items()},
                 }
 
-                new_keys = set(p_row.keys()) - set(p_cols)
-                if p_cols and not new_keys and _make_key(p_row, p_cols) in existing_keys:
-                    log.debug("Skipping existing config '%s' trial %d", name, trial)
-                    continue
+                if skip_keys:
+                    extra = set(p_row.keys()) - set(skip_p_cols)
+                    if not extra:
+                        key = tuple(p_row.get(c, "__NA__") for c in skip_p_cols)
+                        if key in skip_keys:
+                            log.debug("Skipping existing config '%s' trial %d", name, trial)
+                            continue
 
                 log.info("Running config '%s'", name)
                 config_t0 = time.perf_counter()
@@ -256,7 +270,11 @@ def main():
         log.info("Profile saved to %s", prof_path)
 
     new_df = pd.DataFrame(rows)
-    if not existing_df.empty and not new_df.empty:
+    if OVERWRITE:
+        df = _upsert(existing_df, new_df)
+        log.info("Upserted %d existing + %d new = %d total rows",
+                 len(existing_df), len(new_df), len(df))
+    elif not existing_df.empty and not new_df.empty:
         df = pd.concat([existing_df, new_df], ignore_index=True)
         log.info("Merged %d existing + %d new = %d total rows",
                  len(existing_df), len(new_df), len(df))
