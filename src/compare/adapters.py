@@ -414,12 +414,12 @@ class GMMAdapter(Adapter):
         per_comp = 2 * K
 
         # 3. logsumexp reduction: log p(x) = m + log(sum_k exp(log_prob_k - m))
+        #    The final negation for -log p(x) is a sign flip, not counted as a FLOP.
         #   K     sub   log_prob_k - m
         #   K     exp   exp(...)
         #   K-1   add   sum
         #   1     log   log(sum)
         #   1     add   m + log(sum)
-        #   1     neg   negate for -log p(x)
         logsumexp = 3 * K + 1
 
         return kernel + per_comp + logsumexp
