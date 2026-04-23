@@ -373,21 +373,55 @@ class GMMAdapter(Adapter):
         return I * per_iter
 
     def inference_flops(self) -> int:
+        """FLOPs to compute -log p(x) under a K-component GMM.
+
+        The score is the negative log-likelihood:
+            -log p(x) = -log sum_k [ pi_k * N(x | mu_k, Sigma_k) ]
+
+        Decomposes into: Mahalanobis kernel + per-component weighting + logsumexp.
+        """
         D = self._gmm.means_.shape[1]
         K = self.n_components
+
+        # 1. Mahalanobis kernel, per component: maha_k^2 = (x - mu_k)^T @ prec_k @ (x - mu_k)
+        #    where prec_k = Sigma_k^{-1} is the precision (inverse covariance).
         if self.covariance_type == "spherical":
-            # delta = x - mu (D sub), delta^2 (D mul), sum (D-1 add), *prec (1 mul)
+            # prec_k is a scalar (1/sigma_k^2): maha^2 = prec_k * ||x - mu_k||^2
+            #   D     sub   (x - mu_k)
+            #   D     mul   squaring
+            #   D-1   add   sum of squares
+            #   1     mul   prec_k * sum
             kernel = K * (3 * D)
         elif self.covariance_type == "diag":
-            # delta (D sub), delta^2 (D mul), prec*delta^2 (D mul), sum (D-1 add)
-            kernel = K * 4 * D
+            # prec_k is a D-vector: maha^2 = sum_j prec_kj * (x_j - mu_kj)^2
+            #   D     sub   (x - mu_k)
+            #   D     mul   squaring
+            #   D     mul   elementwise prec_k *
+            #   D-1   add   sum
+            kernel = K * (4 * D)
         else:
-            # delta (D sub), prec@delta (D^2 mul + D^2 add), dot (D mul + D-1 add)
+            # prec_k is a DxD matrix.
+            #   D     sub   (x - mu_k)
+            #   D^2   mul   mat-vec prec_k @ (x - mu_k)
+            #   D^2   add   mat-vec accumulation
+            #   D     mul   dot product with (x - mu_k)
+            #   D-1   add   dot product sum
             kernel = K * (2 * D**2 + 3 * D)
-        # Per component: log_w - 0.5*maha (1 mul + 1 sub)
+
+        # 2. Per-component weighting: log_prob_k = log(pi_k) - 0.5 * maha_k^2
+        #   1   mul   0.5 * maha^2
+        #   1   sub   log(pi_k) - ...
         per_comp = 2 * K
-        # logsumexp: K subs + K exps + (K-1) adds + 1 log + 1 add + 1 neg
+
+        # 3. logsumexp reduction: log p(x) = m + log(sum_k exp(log_prob_k - m))
+        #   K     sub   log_prob_k - m
+        #   K     exp   exp(...)
+        #   K-1   add   sum
+        #   1     log   log(sum)
+        #   1     add   m + log(sum)
+        #   1     neg   negate for -log p(x)
         logsumexp = 3 * K + 1
+
         return kernel + per_comp + logsumexp
 
     def training_flops(self) -> int:
