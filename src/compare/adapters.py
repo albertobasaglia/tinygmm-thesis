@@ -438,8 +438,11 @@ class KNNAdapter(Adapter):
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
-        split = max(1, int(len(budget) * (1 - self.val_frac)))
-        train_emb, val_emb = budget[:split], budget[split:]
+        # split = max(1, int(len(budget) * (1 - self.val_frac)))
+        # TODO threshold not computed as at the moment
+        # it is not needed for out metrics.
+
+        train_emb = budget
 
         if self.k > len(train_emb):
             raise SkipConfig(
@@ -448,7 +451,8 @@ class KNNAdapter(Adapter):
         self._nn = NearestNeighbors(n_neighbors=self.k, metric=self.metric)
         self._nn.fit(train_emb)
 
-        val_scores = self.score(val_emb)
+        # FIXME
+        val_scores = self.score(train_emb)
         self.threshold = float(np.percentile(val_scores, 95))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
