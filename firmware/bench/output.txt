@@ -1,0 +1,30 @@
+== adapter inference benchmark (reps=1000 warmup=50 trials=5, min reported) ==
+result small_ae D=16 L=4                     us/inf=    1.38  cyc/inf=      54.3  sink=0.183032
+result small_ae D=16 L=8                     us/inf=    2.03  cyc/inf=      81.1  sink=0.201351
+result small_ae D=32 L=4                     us/inf=    2.33  cyc/inf=      93.0  sink=0.230795
+result small_ae D=32 L=8                     us/inf=    3.57  cyc/inf=     142.6  sink=0.204145
+result gmm D=16 K=1 cov=spherical            us/inf=    0.53  cyc/inf=      21.0  sink=0.438594
+result gmm D=16 K=1 cov=diag                 us/inf=    0.50  cyc/inf=      20.0  sink=0.439312
+result gmm D=16 K=1 cov=full                 us/inf=    1.36  cyc/inf=      54.4  sink=-1.669969
+result gmm D=16 K=2 cov=spherical            us/inf=    1.00  cyc/inf=      39.8  sink=0.504832
+result gmm D=16 K=2 cov=diag                 us/inf=    1.04  cyc/inf=      41.6  sink=0.657185
+result gmm D=16 K=2 cov=full                 us/inf=    2.72  cyc/inf=     108.8  sink=-0.367062
+result gmm D=16 K=3 cov=spherical            us/inf=    1.40  cyc/inf=      55.8  sink=0.063493
+result gmm D=16 K=3 cov=diag                 us/inf=    1.41  cyc/inf=      56.2  sink=0.779297
+result gmm D=16 K=3 cov=full                 us/inf=    4.08  cyc/inf=     163.3  sink=-1.123372
+result gmm D=32 K=1 cov=spherical            us/inf=    0.60  cyc/inf=      23.9  sink=2.794322
+result gmm D=32 K=1 cov=diag                 us/inf=    0.59  cyc/inf=      23.5  sink=1.920739
+result gmm D=32 K=1 cov=full                 us/inf=    4.54  cyc/inf=     181.5  sink=-2.437199
+result gmm D=32 K=2 cov=spherical            us/inf=    1.12  cyc/inf=      44.7  sink=1.199450
+result gmm D=32 K=2 cov=diag                 us/inf=    1.19  cyc/inf=      47.7  sink=1.562115
+result gmm D=32 K=2 cov=full                 us/inf=    9.08  cyc/inf=     363.3  sink=0.006714
+result gmm D=32 K=3 cov=spherical            us/inf=    1.63  cyc/inf=      65.3  sink=1.244704
+result gmm D=32 K=3 cov=diag                 us/inf=    1.71  cyc/inf=      68.4  sink=1.192017
+result gmm D=32 K=3 cov=full                 us/inf=   13.36  cyc/inf=     534.3  sink=-1.576541
+result knn D=16 N=10 k=5                     us/inf=    1.47  cyc/inf=      58.9  sink=2.586520
+result knn D=16 N=50 k=5                     us/inf=    5.79  cyc/inf=     231.5  sink=1.624742
+result knn D=16 N=100 k=5                    us/inf=   10.47  cyc/inf=     418.7  sink=1.567153
+result knn D=32 N=10 k=5                     us/inf=    2.20  cyc/inf=      88.1  sink=5.908141
+result knn D=32 N=50 k=5                     us/inf=    9.28  cyc/inf=     371.2  sink=3.572586
+result knn D=32 N=100 k=5                    us/inf=   18.77  cyc/inf=     750.8  sink=3.844417
+== done ==
