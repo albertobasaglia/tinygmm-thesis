@@ -18,3 +18,11 @@
 #ifndef BENCH_TRIALS
 #define BENCH_TRIALS      5
 #endif
+
+/* Cap on the timed critical-section window in microseconds. Must stay well
+   under one FreeRTOS tick (~10 ms) so the tick ISR can't land in the chunk,
+   and well under the interrupt watchdog (default 300 ms) so we don't panic
+   on slow configs. We chunk BENCH_REPS into pieces sized for this budget. */
+#ifndef BENCH_WINDOW_US
+#define BENCH_WINDOW_US   5000
+#endif

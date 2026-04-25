@@ -22,42 +22,70 @@ typedef float (*score_fn)(void *ctx, const float *x);
 
 static portMUX_TYPE bench_mux = portMUX_INITIALIZER_UNLOCKED;
 
+/* Buffered output. The ROM-level console path drops bytes under load
+   (UART poll + USB-Serial/JTAG secondary, no driver installed), so we
+   collect each result line in RAM and print them all after compute is
+   done, with deliberate pacing per line. */
+#define MAX_RESULTS 64
+static char results[MAX_RESULTS][96];
+static int  n_results = 0;
+
 static void bench(const char *tag, void *ctx, score_fn fn, const float *query, int D)
 {
+    /* Warmup also estimates per-inference cost so we can size the timed
+       chunk to stay under BENCH_WINDOW_US. */
+    int64_t w0 = esp_timer_get_time();
     for (int i = 0; i < BENCH_WARMUP; i++)
         sink = fn(ctx, query);
+    int64_t w1 = esp_timer_get_time();
 
-    uint32_t best_cyc = UINT32_MAX;
-    int64_t  best_us  = INT64_MAX;
+    int est_us = (int)((w1 - w0) / BENCH_WARMUP);
+    if (est_us < 1) est_us = 1;
+
+    int chunk = BENCH_WINDOW_US / est_us;
+    if (chunk < 1)          chunk = 1;
+    if (chunk > BENCH_REPS) chunk = BENCH_REPS;
+
+    /* Track the min per-inference cost across all chunks and trials. */
+    double best_cyc_per = 1e18;
+    double best_us_per  = 1e18;
 
     for (int trial = 0; trial < BENCH_TRIALS; trial++) {
-        /* Disable interrupts on this core for the timed window so the 100 Hz
-           tick ISR (and any other interrupt) can't land in the cycle count.
-           Keep the window under one tick period (~10 ms). */
-        taskENTER_CRITICAL(&bench_mux);
+        for (int done = 0; done < BENCH_REPS; done += chunk) {
+            int n = (BENCH_REPS - done < chunk) ? BENCH_REPS - done : chunk;
 
-        int64_t  t0 = esp_timer_get_time();
-        uint32_t c0 = esp_cpu_get_cycle_count();
+            /* Disable interrupts on this core for the timed window so the
+               100 Hz tick ISR (and any other interrupt) can't land in the
+               cycle count. The chunk is sized to stay under one tick
+               period and well under the interrupt watchdog limit. */
+            taskENTER_CRITICAL(&bench_mux);
 
-        for (int i = 0; i < BENCH_REPS; i++)
-            sink = fn(ctx, query);
+            int64_t  t0 = esp_timer_get_time();
+            uint32_t c0 = esp_cpu_get_cycle_count();
 
-        uint32_t c1 = esp_cpu_get_cycle_count();
-        int64_t  t1 = esp_timer_get_time();
+            for (int i = 0; i < n; i++)
+                sink = fn(ctx, query);
 
-        taskEXIT_CRITICAL(&bench_mux);
+            uint32_t c1 = esp_cpu_get_cycle_count();
+            int64_t  t1 = esp_timer_get_time();
 
-        uint32_t dcyc = c1 - c0;
-        int64_t  dus  = t1 - t0;
-        if (dcyc < best_cyc) best_cyc = dcyc;
-        if (dus  < best_us)  best_us  = dus;
+            taskEXIT_CRITICAL(&bench_mux);
+
+            double cyc_per = (double)(c1 - c0) / (double)n;
+            double us_per  = (double)(t1 - t0) / (double)n;
+            if (cyc_per < best_cyc_per) best_cyc_per = cyc_per;
+            if (us_per  < best_us_per)  best_us_per  = us_per;
+        }
+        /* Let IDLE0 run so the task watchdog gets fed between trials. */
+        vTaskDelay(1);
     }
 
-    printf("result %-36s  us/inf=%8.2f  cyc/inf=%10.1f  sink=%f\n",
-           tag,
-           (double)best_us  / (double)BENCH_REPS,
-           (double)best_cyc / (double)BENCH_REPS,
-           (double)sink);
+    if (n_results < MAX_RESULTS) {
+        snprintf(results[n_results], sizeof(results[0]),
+                 "result %-36s  us/inf=%8.2f  cyc/inf=%10.1f  sink=%f",
+                 tag, best_us_per, best_cyc_per, (double)sink);
+        n_results++;
+    }
 }
 
 /* -- Typed wrappers so we can pass a uniform score_fn. -- */
@@ -147,6 +175,18 @@ void app_main(void)
         }
     }
 
+    /* Pacing chosen so each line clears the UART (~7 ms at 115200 baud
+       for ~80 chars) and the USB-Serial/JTAG host endpoint has time to
+       poll. The [i/N] prefix lets you spot any drops at a glance. */
+    printf("== printing %d results ==\n", n_results);
+    fflush(stdout);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    for (int i = 0; i < n_results; i++) {
+        printf("[%02d/%02d] %s\n", i + 1, n_results, results[i]);
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
     printf("== done ==\n");
+    fflush(stdout);
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }
