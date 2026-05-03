@@ -4,3 +4,4 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # ensure src/ is on the p
 
 from .base import EmbeddingProvider
 from .speech import SpeechEmbeddingProvider
+from .tabular import TabularEmbeddingProvider
