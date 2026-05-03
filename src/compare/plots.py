@@ -7,6 +7,9 @@ from scipy import stats
 def _filter(df: pd.DataFrame, where: dict) -> pd.DataFrame:
     subset = df.copy()
     for k, v in where.items():
+        if k not in subset.columns:
+            # Column absent (e.g. a sweep dimension that wasn't run): no rows match.
+            return subset.iloc[0:0]
         subset = subset[subset[k] == v]
     return subset
 
@@ -53,9 +56,7 @@ def plot_far_recall(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """
     fig, ax = plt.subplots()
     for label, where in lines:
-        subset = df.copy()
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
+        subset = _filter(df, where)
         ax.scatter(subset["m_false_alarm_rate"], subset["m_recall"], label=label, s=60)
 
     ax.set_xlabel("False Alarm Rate (FAR)")
@@ -106,10 +107,9 @@ def plot_precision_recall_bar(df: pd.DataFrame, train_n: int,
         lines   : list of (label, filter_dict) pairs
     """
     labels, precisions, recalls = [], [], []
+    base = df[df["p_train_n"] == train_n]
     for label, where in lines:
-        subset = df[df["p_train_n"] == train_n].copy()
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
+        subset = _filter(base, where)
         if subset.empty:
             continue
         labels.append(label)
@@ -173,9 +173,7 @@ def plot_eer_by_dim(df: pd.DataFrame, lines: list[tuple[str, dict]],
 
     fig, ax = plt.subplots()
     for label, where in lines:
-        s = subset.copy()
-        for k, v in where.items():
-            s = s[s[k] == v]
+        s = _filter(subset, where)
         s = s.groupby("p_embedding_dim")["m_eer"].mean().reset_index().sort_values("p_embedding_dim")
         ax.plot(s["p_embedding_dim"], s["m_eer"], marker="o", label=label)
 
@@ -201,10 +199,7 @@ def plot_eer_train_n_by_dim(df: pd.DataFrame, where: dict = None):
         where : optional filter to narrow to a single adapter config,
                 e.g. {"p_adapter": "GMMAdapter", "p_covariance_type": "diag"}
     """
-    subset = df.copy()
-    if where:
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
+    subset = _filter(df, where) if where else df.copy()
 
     fig, ax = plt.subplots()
     for dim, group in subset.groupby("p_embedding_dim"):
@@ -237,8 +232,7 @@ def plot_sweep(df: pd.DataFrame, x: str, y: str, group_by: str = None,
     if filter:
         subset = subset[subset["p_adapter"] == filter]
     if where:
-        for k, v in where.items():
-            subset = subset[subset[k] == v]
+        subset = _filter(subset, where)
 
     fig, ax = plt.subplots()
     if group_by:
@@ -297,6 +291,10 @@ def plot_loss_curves(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     train_cols = [f"m_train_loss_{i}" for i in range(1, 6)]
     val_cols = [f"m_val_loss_{i}" for i in range(1, 6)]
 
+    if not all(c in df.columns for c in train_cols):
+        print("plot_loss_curves: training-loss columns missing, skipping.")
+        return
+
     for label, where in lines:
         subset = _filter(df, where).dropna(subset=train_cols, how="all")
         if subset.empty:
@@ -336,6 +334,10 @@ def plot_loss_vs_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     anomaly detection. If there is no correlation, the reconstruction
     objective is misaligned with the task.
     """
+    if "m_train_loss_5" not in df.columns:
+        print("plot_loss_vs_eer: m_train_loss_5 missing, skipping.")
+        return
+
     fig, ax = plt.subplots()
     for label, where in lines:
         subset = _filter(df, where).dropna(subset=["m_train_loss_5"])
@@ -364,7 +366,10 @@ def plot_gmm_components(df: pd.DataFrame, y: str = "m_eer",
         fixed_train_n : training budget to slice on
     """
     sub = _filter(df, {"p_adapter": "GMMAdapter"})
-    sub = sub[sub["p_train_n"] == fixed_train_n]
+    sub = sub[sub["p_train_n"] == fixed_train_n] if "p_train_n" in sub.columns else sub
+    if sub.empty or "p_covariance_type" not in sub.columns or "p_n_components" not in sub.columns:
+        print("plot_gmm_components: no GMM rows in DataFrame, skipping.")
+        return
 
     fig, ax = plt.subplots()
     cov_types = sorted(sub["p_covariance_type"].unique())
@@ -401,6 +406,10 @@ def plot_gmm_diag_vs_full(df: pd.DataFrame, y: str = "m_eer"):
         y  : metric column (e.g. "m_eer", "m_auc")
     """
     sub = _filter(df, {"p_adapter": "GMMAdapter"})
+    if sub.empty or "p_covariance_type" not in sub.columns or "p_n_components" not in sub.columns:
+        print("plot_gmm_diag_vs_full: no GMM rows in DataFrame, skipping.")
+        return
+
     fig, ax = plt.subplots()
 
     for cov in sorted(sub["p_covariance_type"].unique()):
@@ -440,7 +449,11 @@ def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
         if subset.empty:
             continue
 
-        # Aggregate by unique (x, y) combinations across trials/configs
+        # Aggregate by unique x value (averaging y across trials AND across
+        # distinct configs that share the same x). Configs with identical
+        # FLOPs (e.g. GMM K=1 diag and K=1 sph at the same train_n) collapse
+        # into one point, so the frontier is computed on those means rather
+        # than on each individual config.
         agg = subset.groupby([x])[y].mean().reset_index()
         xs, ys = agg[x].values, agg[y].values
 
