@@ -19,6 +19,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import pandas as pd
+from tqdm.auto import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 from embeddings.base import EmbeddingProvider
 from embeddings.tabular import TabularEmbeddingProvider
@@ -283,46 +285,59 @@ def main():
         configs = make_configs(embedding_dim)
         log.info("%d configs × %d trials = %d runs", len(configs), N_TRIALS, len(configs) * N_TRIALS)
 
-        for trial in range(N_TRIALS):
-            trial_t0 = time.perf_counter()
-            rng = np.random.default_rng(seed=trial)
-            shuffled_emb = rng.permutation(train_emb)
+        with logging_redirect_tqdm(), tqdm(
+            total=N_TRIALS * len(configs),
+            desc=provider.name,
+            unit="run",
+        ) as pbar:
+            for trial in range(N_TRIALS):
+                trial_t0 = time.perf_counter()
+                rng = np.random.default_rng(seed=trial)
+                shuffled_emb = rng.permutation(train_emb)
 
-            for name, cls, kwargs in configs:
-                p_row = {
-                    "p_trial": trial,
-                    "p_embedding_dim": embedding_dim,
-                    "p_target_class": provider.target_class,
-                    "p_other_classes": "|".join(sorted(provider.other_classes)),
-                    "p_adapter": cls.__name__,
-                    **{f"p_{k}": v for k, v in kwargs.items()},
-                }
+                for name, cls, kwargs in configs:
+                    try:
+                        pbar.set_postfix(
+                            trial=f"{trial + 1}/{N_TRIALS}",
+                            cfg=name[:30],
+                            refresh=False,
+                        )
+                        p_row = {
+                            "p_trial": trial,
+                            "p_embedding_dim": embedding_dim,
+                            "p_target_class": provider.target_class,
+                            "p_other_classes": "|".join(sorted(provider.other_classes)),
+                            "p_adapter": cls.__name__,
+                            **{f"p_{k}": v for k, v in kwargs.items()},
+                        }
 
-                if skip_keys:
-                    extra = set(p_row.keys()) - set(skip_p_cols)
-                    if not extra:
-                        key = tuple(p_row.get(c, "__NA__") for c in skip_p_cols)
-                        if key in skip_keys:
-                            log.debug("Skipping existing config '%s' trial %d", name, trial)
+                        if skip_keys:
+                            extra = set(p_row.keys()) - set(skip_p_cols)
+                            if not extra:
+                                key = tuple(p_row.get(c, "__NA__") for c in skip_p_cols)
+                                if key in skip_keys:
+                                    log.debug("Skipping existing config '%s' trial %d", name, trial)
+                                    continue
+
+                        log.debug("Running config '%s'", name)
+                        config_t0 = time.perf_counter()
+                        adapter = cls(**kwargs)
+                        try:
+                            adapter.fit(shuffled_emb)
+                        except SkipConfig as e:
+                            log.warning("Skipping config '%s': %s", name, e)
                             continue
+                        rows.append({
+                            **p_row,
+                            **evaluate(adapter, test_target, test_other),
+                        })
 
-                log.info("Running config '%s'", name)
-                config_t0 = time.perf_counter()
-                adapter = cls(**kwargs)
-                try:
-                    adapter.fit(shuffled_emb)
-                except SkipConfig as e:
-                    log.warning("Skipping config '%s': %s", name, e)
-                    continue
-                rows.append({
-                    **p_row,
-                    **evaluate(adapter, test_target, test_other),
-                })
+                        config_t1 = time.perf_counter()
+                        log.debug("Config '%s' took %.1fs", name, config_t1 - config_t0)
+                    finally:
+                        pbar.update(1)
 
-                config_t1 = time.perf_counter()
-                log.info("Config '%s' took %.1fs", name, config_t1 - config_t0)
-
-            log.info("Trial %d/%d done in %.1fs", trial + 1, N_TRIALS, time.perf_counter() - trial_t0)
+                log.info("Trial %d/%d done in %.1fs", trial + 1, N_TRIALS, time.perf_counter() - trial_t0)
 
     total_elapsed = time.perf_counter() - total_t0
     log.info("All experiments completed in %.1fs", total_elapsed)
