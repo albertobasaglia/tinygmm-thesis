@@ -65,8 +65,9 @@ def save(name: str):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_parquet(ROOT / "results" / "sweep.parquet")
-    print(f"Loaded {len(df)} rows from sweep.parquet")
+    sweep_path = ROOT / "results" / "sweep_speech_latest.parquet"
+    df = pd.read_parquet(sweep_path)
+    print(f"Loaded {len(df)} rows from {sweep_path.name}")
     print(f"Writing PDFs to {OUT}\n")
 
     # ------------------------------------------------------------------
@@ -74,8 +75,9 @@ def main():
     # ------------------------------------------------------------------
     GMM_BEST       = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
     KNN_BEST       = {"p_adapter": "KNNAdapter", "p_k": 5}
-    AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                      "p_dropout_p": 0.2, "p_threshold_mode": "train"}
+    AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}
+    PROTOTYPE_BEST = {"p_adapter": "PrototypeAdapter"}
+    COSINE_BEST    = {"p_adapter": "CosineAdapter"}
 
     FIXED_TRAIN_N = 45  # mid-budget comparison point (few-shot regime)
 
@@ -83,6 +85,8 @@ def main():
         ("GMM K=1 diag", GMM_BEST),
         ("kNN k=5",      KNN_BEST),
         ("SmallAE",      AE_BEST),
+        ("Cosine",       COSINE_BEST),
+        ("Prototype",    PROTOTYPE_BEST),
     ]
 
     # ==================================================================
@@ -193,10 +197,8 @@ def main():
     # ==================================================================
     print("D. AE convergence")
 
-    # Only plot ep=200: shorter runs would collapse onto the left edge of
-    # the shared x-axis and overlap, making the curves unreadable.
     loss_lines = [
-        ("SmallAE ep=200", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 200}),
+        ("SmallAE lat=8 ep=100", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}),
     ]
     if "m_val_loss_1" in df.columns and not _filter(df, loss_lines[0][1]).empty:
         plot_loss_curves(df, lines=loss_lines)
@@ -259,9 +261,11 @@ def main():
 
     # E3. Pareto frontiers
     pareto_lines = [
-        ("SmallAE", {"p_adapter": "SmallAEAdapter"}),
-        ("GMM",     {"p_adapter": "GMMAdapter"}),
-        ("kNN",     {"p_adapter": "KNNAdapter"}),
+        ("SmallAE",   {"p_adapter": "SmallAEAdapter"}),
+        ("GMM",       {"p_adapter": "GMMAdapter"}),
+        ("kNN",       {"p_adapter": "KNNAdapter"}),
+        ("Cosine",    {"p_adapter": "CosineAdapter"}),
+        ("Prototype", {"p_adapter": "PrototypeAdapter"}),
     ]
     plot_pareto(df, lines=pareto_lines, x="m_training_flops")
     save("pareto_training")
@@ -292,7 +296,8 @@ def main():
     ax.set_xticklabels(words, rotation=30, ha="right")
     ax.set_ylabel("EER")
     ax.set_title(f"EER by target word (train_n={FIXED_TRAIN_N})")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5),
+              frameon=False)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     save("eer_per_word")
@@ -310,7 +315,8 @@ def main():
     ax.set_xticklabels(words, rotation=30, ha="right")
     ax.set_ylabel("ACC @ FAR=5%")
     ax.set_title(f"ACC @ FAR=5% by target word (train_n={FIXED_TRAIN_N})")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5),
+              frameon=False)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     save("acc_at_far5_per_word")
@@ -324,6 +330,13 @@ def main():
         test_df = pd.read_parquet(test_path)
         print(f"  loaded {len(test_df)} rows | adapters: {test_df['p_adapter'].unique().tolist()}")
 
+        # Single-train_n slice used for headline numbers (table, CI bar, boxplot, t-test, FAR-recall)
+        TEST_TRAIN_N = 95
+        if "p_train_n" in test_df.columns and TEST_TRAIN_N in set(test_df["p_train_n"]):
+            test_slice = test_df[test_df["p_train_n"] == TEST_TRAIN_N]
+        else:
+            test_slice = test_df
+
         # G1. Summary table (LaTeX)
         tables_dir = ROOT / "tinygmm-tex" / "tables"
         tables_dir.mkdir(parents=True, exist_ok=True)
@@ -334,9 +347,14 @@ def main():
             "m_f1": "F1",
             "m_acc_at_far5": "ACC@FAR=5\\%",
         }
-        metrics = [m for m in metric_labels if m in test_df.columns]
-        adapter_labels = {"GMMAdapter": "GMM K=1 diag", "SmallAEAdapter": "SmallAE ep=200"}
-        agg = test_df.groupby("p_adapter")[metrics].agg(["mean", "std"])
+        metrics = [m for m in metric_labels if m in test_slice.columns]
+        adapter_labels = {
+            "GMMAdapter": "GMM K=1 diag",
+            "SmallAEAdapter": "SmallAE lat=8 ep=100",
+            "CosineAdapter": "Cosine",
+            "PrototypeAdapter": "Prototype",
+        }
+        agg = test_slice.groupby("p_adapter")[metrics].agg(["mean", "std"])
         col_header = " & ".join(metric_labels[m] for m in metrics)
         rows = []
         for adapter_key, label in adapter_labels.items():
@@ -353,6 +371,7 @@ def main():
             "\\begin{table}[htbp]",
             "  \\centering",
             "  \\caption{Final-test metrics on the 5 held-out words"
+            f" at train\\_n={TEST_TRAIN_N}"
             " (mean $\\pm$ std across 5 words $\\times$ 10 trials).}",
             "  \\label{tab:test_summary}",
             "  \\resizebox{\\textwidth}{!}{%",
@@ -370,10 +389,11 @@ def main():
         print("  saved tables/test_summary.tex")
 
         # G2. EER bar chart with 95% CI
-        adapters = sorted(test_df["p_adapter"].unique())
+        adapters = [a for a in adapter_labels if a in test_slice["p_adapter"].unique()]
+        tick_labels = [adapter_labels[a] for a in adapters]
         means, margins = [], []
         for a in adapters:
-            vals = test_df.loc[test_df["p_adapter"] == a, "m_eer"].dropna()
+            vals = test_slice.loc[test_slice["p_adapter"] == a, "m_eer"].dropna()
             n = len(vals)
             mean = vals.mean()
             sem = vals.std(ddof=1) / np.sqrt(n)
@@ -381,50 +401,82 @@ def main():
             means.append(mean)
             margins.append(t_crit * sem)
         fig, ax = plt.subplots()
-        ax.bar(adapters, means, yerr=margins, capsize=6, color=["#4C72B0", "#DD8452"])
+        bar_palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
+        ax.bar(tick_labels, means, yerr=margins, capsize=6,
+               color=bar_palette[:len(adapters)])
         ax.set_ylabel("EER")
-        ax.set_title("Final test EER (5 held-out words, 95% CI)")
+        ax.set_title(f"Final test EER (5 held-out words, train_n={TEST_TRAIN_N}, 95% CI)")
         ax.grid(axis="y", alpha=0.3)
+        plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
         fig.tight_layout()
         save("test_eer_ci")
 
         # G3. Paired t-test GMM vs SmallAE (stdout only)
         if set(adapters) >= {"GMMAdapter", "SmallAEAdapter"}:
             idx = ["p_trial", "p_target_class"]
-            gmm_eer = test_df[test_df["p_adapter"] == "GMMAdapter"].set_index(idx)["m_eer"]
-            ae_eer = test_df[test_df["p_adapter"] == "SmallAEAdapter"].set_index(idx)["m_eer"]
+            gmm_eer = test_slice[test_slice["p_adapter"] == "GMMAdapter"].set_index(idx)["m_eer"]
+            ae_eer = test_slice[test_slice["p_adapter"] == "SmallAEAdapter"].set_index(idx)["m_eer"]
             paired = pd.concat([gmm_eer.rename("gmm"), ae_eer.rename("ae")], axis=1).dropna()
             diff = paired["ae"] - paired["gmm"]
             t, p = stats.ttest_rel(paired["ae"], paired["gmm"])
             cohen_d = diff.mean() / diff.std(ddof=1)
             print(
-                f"  paired t-test (AE - GMM): n={len(paired)}  "
+                f"  paired t-test (AE - GMM) at train_n={TEST_TRAIN_N}: n={len(paired)}  "
                 f"mean={diff.mean():+.4f}  d={cohen_d:+.3f}  t={t:+.3f}  p={p:.4g}"
             )
 
         # G4. EER boxplot
-        data = [test_df.loc[test_df["p_adapter"] == a, "m_eer"].dropna().values for a in adapters]
+        data = [test_slice.loc[test_slice["p_adapter"] == a, "m_eer"].dropna().values for a in adapters]
         fig, ax = plt.subplots()
         bp = ax.boxplot(
-            data, tick_labels=adapters, patch_artist=True, showmeans=True,
+            data, tick_labels=tick_labels, patch_artist=True, showmeans=True,
             meanprops={"marker": "D", "markerfacecolor": "white", "markeredgecolor": "black"},
         )
-        for patch, color in zip(bp["boxes"], ["#4C72B0", "#DD8452"]):
+        for patch, color in zip(bp["boxes"], bar_palette[:len(adapters)]):
             patch.set_facecolor(color)
             patch.set_alpha(0.6)
         ax.set_ylabel("EER")
-        ax.set_title("Final test EER distribution (5 words x 10 trials)")
+        ax.set_title(f"Final test EER distribution (5 words x 10 trials, train_n={TEST_TRAIN_N})")
         ax.grid(axis="y", alpha=0.3)
+        plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
         fig.tight_layout()
         save("test_eer_box")
 
         # G5. FAR vs Recall scatter
         test_lines = [
-            ("GMM K=1 diag",   {"p_adapter": "GMMAdapter"}),
-            ("SmallAE ep=200", {"p_adapter": "SmallAEAdapter"}),
+            ("GMM K=1 diag",         {"p_adapter": "GMMAdapter"}),
+            ("SmallAE lat=8 ep=100", {"p_adapter": "SmallAEAdapter"}),
+            ("Cosine",               {"p_adapter": "CosineAdapter"}),
+            ("Prototype",            {"p_adapter": "PrototypeAdapter"}),
         ]
-        plot_far_recall(test_df, lines=test_lines)
+        plot_far_recall(test_slice, lines=test_lines)
         save("test_far_recall")
+
+        # G6. Metrics vs train_n on the test set
+        def _metric_vs_train_n(metric: str, ylabel: str, fname: str):
+            fig, ax = plt.subplots()
+            for a, color in zip(adapters, bar_palette):
+                sub = test_df[test_df["p_adapter"] == a]
+                agg_tn = sub.groupby("p_train_n")[metric].agg(["mean", "std", "count"]).reset_index()
+                agg_tn = agg_tn.sort_values("p_train_n")
+                ci = 1.96 * agg_tn["std"] / np.sqrt(agg_tn["count"])
+                ax.plot(agg_tn["p_train_n"], agg_tn["mean"], marker="o",
+                        label=adapter_labels[a], color=color)
+                ax.fill_between(agg_tn["p_train_n"],
+                                agg_tn["mean"] - ci, agg_tn["mean"] + ci,
+                                alpha=0.15, color=color)
+            ax.set_xlabel("Enrollment size (train_n)")
+            ax.set_ylabel(ylabel)
+            ax.set_title(f"Final test: {ylabel} vs enrollment budget (5 held-out words)")
+            ax.legend(fontsize=7)
+            ax.grid(alpha=0.3)
+            fig.tight_layout()
+            save(fname)
+
+        if "p_train_n" in test_df.columns and test_df["p_train_n"].nunique() > 1:
+            _metric_vs_train_n("m_eer",          "EER",          "test_eer_vs_train_n")
+            _metric_vs_train_n("m_auc",          "AUC",          "test_auc_vs_train_n")
+            _metric_vs_train_n("m_acc_at_far5",  "ACC @ FAR=5%", "test_acc_at_far5_vs_train_n")
     else:
         print(f"G. Final test skipped ({test_path} not found)")
 

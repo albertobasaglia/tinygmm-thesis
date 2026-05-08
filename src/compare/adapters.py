@@ -66,6 +66,15 @@ class Adapter(ABC):
     def training_flops(self) -> int:
         """Total FLOPs for the fit() call."""
 
+    @abstractmethod
+    def parameters(self) -> int:
+        """Number of float values that must be stored on-device at inference.
+
+        Counts the persistent state required to score a new sample
+        (means, covariances, weights, prototype, stored neighbours,
+        threshold, ...).  Multiply by the dtype size to get bytes.
+        """
+
 
 class AutoencoderAdapter(Adapter):
     N_LOSS_CHECKPOINTS = 5
@@ -195,6 +204,12 @@ class AutoencoderAdapter(Adapter):
         per_epoch = n_train * per_sample + math.ceil(n_train / self.batch_size) * adam_per_step
         return self.epochs * per_epoch
 
+    def parameters(self) -> int:
+        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
+        # Linear(D,H) + Linear(H,L) + Linear(L,H) + Linear(H,D), all with biases
+        weights = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D
+        return weights + 1  # + threshold
+
 
 class SmallAEAdapter(Adapter):
     """Small autoencoder: input_dim → latent_dim (ReLU) → input_dim."""
@@ -319,6 +334,12 @@ class SmallAEAdapter(Adapter):
         per_epoch = n_train * per_sample + math.ceil(n_train / self.batch_size) * adam_per_step
         return self.epochs * per_epoch
 
+    def parameters(self) -> int:
+        D, L = self.input_dim, self.latent_dim
+        # Linear(D,L) + Linear(L,D), both with biases
+        weights = (D+1)*L + (L+1)*D
+        return weights + 1  # + threshold
+
 
 class GMMAdapter(Adapter):
     def __init__(self, n_components=3, covariance_type="full", val_frac=0.25,
@@ -428,6 +449,111 @@ class GMMAdapter(Adapter):
         # EM algorithm is multiply-accumulate dominated: 2 FLOPs per MAC
         return 2 * self.training_macs()
 
+    def parameters(self) -> int:
+        D = self._gmm.means_.shape[1]
+        K = self.n_components
+        means = K * D
+        if self.covariance_type == "spherical":
+            cov = K
+        elif self.covariance_type == "diag":
+            cov = K * D
+        elif self.covariance_type == "tied":
+            cov = D * D
+        else:  # full
+            cov = K * D * D
+        weights = K
+        return means + cov + weights + 1  # + threshold
+
+
+class PrototypeAdapter(Adapter):
+    """Single prototype: fit = mean of enrollment, score = Euclidean distance.
+
+    The simplest possible non-trivial baseline: collapse the enrolled
+    samples to a single point and score by Euclidean distance to it.
+    Threshold is the given percentile of training-sample distances.
+    """
+
+    def __init__(self, threshold_percentile=95, train_n=None):
+        super().__init__(train_n)
+        self.threshold_percentile = threshold_percentile
+
+    def fit(self, emb: np.ndarray):
+        budget = self._get_budget(emb)
+        self._prototype = budget.mean(axis=0)
+        self._dim = budget.shape[1]
+        train_scores = self.score(budget)
+        self.threshold = float(np.percentile(train_scores, self.threshold_percentile))
+
+    def score(self, emb: np.ndarray) -> np.ndarray:
+        return np.linalg.norm(emb - self._prototype, axis=1)
+
+    def inference_macs(self) -> int:
+        # D subtracts + D MACs for squared accumulation
+        return 2 * self._dim
+
+    def training_macs(self) -> int:
+        # Sum of train_n D-vectors
+        return self.train_n * self._dim
+
+    def inference_flops(self) -> int:
+        # D sub + D mul + (D-1) add + 1 sqrt
+        return 3 * self._dim
+
+    def training_flops(self) -> int:
+        # Sum: N*D adds, then D divisions for the mean
+        return self.train_n * self._dim + self._dim
+
+    def parameters(self) -> int:
+        # prototype (D) + threshold (1)
+        return self._dim + 1
+
+
+class CosineAdapter(Adapter):
+    """Single prototype: fit = mean of enrollment, score = 1 - cos(z, mean).
+
+    Mirrors the TinySV-style prototype matcher used as the comparison
+    point in the related-work / neural-collapse argument.  Threshold is
+    the given percentile of training-sample scores.
+    """
+
+    def __init__(self, threshold_percentile=95, train_n=None):
+        super().__init__(train_n)
+        self.threshold_percentile = threshold_percentile
+
+    def fit(self, emb: np.ndarray):
+        budget = self._get_budget(emb)
+        self._prototype = budget.mean(axis=0)
+        self._proto_norm = float(np.linalg.norm(self._prototype))
+        self._dim = budget.shape[1]
+        train_scores = self.score(budget)
+        self.threshold = float(np.percentile(train_scores, self.threshold_percentile))
+
+    def score(self, emb: np.ndarray) -> np.ndarray:
+        dots = emb @ self._prototype
+        norms = np.linalg.norm(emb, axis=1)
+        cos_sim = dots / (norms * self._proto_norm + 1e-12)
+        return 1.0 - cos_sim
+
+    def inference_macs(self) -> int:
+        # dot(z, prototype): D MACs;  ||z||^2: D MACs;  ||p|| precomputed
+        return 2 * self._dim
+
+    def training_macs(self) -> int:
+        # Sum of train_n D-vectors + ||prototype||^2
+        return self.train_n * self._dim + self._dim
+
+    def inference_flops(self) -> int:
+        # dot: 2D-1; norm-squared: 2D-1; sqrt: 1; norms*proto_norm: 1; div: 1; 1 - cos: 1
+        return 4 * self._dim + 3
+
+    def training_flops(self) -> int:
+        # Mean: N*D adds + D divs;  prototype norm: 2D MACs + 1 sqrt
+        return self.train_n * self._dim + self._dim + 2 * self._dim + 1
+
+    def parameters(self) -> int:
+        # prototype (D) + cached ||prototype|| (1) + threshold (1)
+        return self._dim + 2
+
 
 class KNNAdapter(Adapter):
     def __init__(self, k=5, metric="euclidean", val_frac=0.25, train_n=None):
@@ -474,3 +600,8 @@ class KNNAdapter(Adapter):
 
     def training_flops(self) -> int:
         return 0  # KNN just stores the data
+
+    def parameters(self) -> int:
+        # All stored training points + threshold
+        n_stored, D = self._nn._fit_X.shape
+        return n_stored * D + 1

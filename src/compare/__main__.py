@@ -26,7 +26,10 @@ from embeddings.base import EmbeddingProvider
 from embeddings.tabular import TabularEmbeddingProvider
 from embeddings.speech import SpeechEmbeddingProvider
 
-from .adapters import AutoencoderAdapter, SmallAEAdapter, GMMAdapter, KNNAdapter, SkipConfig
+from .adapters import (
+    AutoencoderAdapter, SmallAEAdapter, GMMAdapter, KNNAdapter,
+    PrototypeAdapter, CosineAdapter, SkipConfig,
+)
 from .metrics import evaluate
 from .sweep import sweep
 
@@ -62,7 +65,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    PROVIDER = "pendigits"  # one of: "pendigits", "speech"
+    PROVIDER = "speech"  # one of: "pendigits", "speech"
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"  # used by commented AE configs in make_configs
     TEST_N = 500
@@ -100,9 +103,11 @@ def main():
 
     if RESUME_FROM is not None:
         existing_df = pd.read_parquet(RESUME_FROM)
-        log.info("Loaded %d existing rows from %s", len(existing_df), RESUME_FROM)
+        log.info("Resuming from %s (%d existing rows, on_duplicate=%s)",
+                 RESUME_FROM, len(existing_df), ON_DUPLICATE)
     else:
         existing_df = pd.DataFrame()
+        log.info("Fresh run: no prior results found at %s", latest_path)
 
     # Build the skip lookup. Sources:
     #   - existing_df, only when ON_DUPLICATE == "skip" (otherwise we rerun it).
@@ -201,7 +206,7 @@ def main():
     # injected automatically from the provider's embedding_dim below.
     # =================================================================
     # train_n = [5, 10, 20, 50, 100, 200, 500]
-    train_n = list(range(5, 100, 10))
+    train_n = list(range(5, 20, 1))
 
     def make_configs(embedding_dim: int) -> list:
         return [
@@ -240,26 +245,32 @@ def main():
                 "train_n": train_n,
                 "k": list(range(1, 11, 1)),
             }),
-            *sweep(SmallAEAdapter, {
+            *sweep(PrototypeAdapter, {
                 "train_n": train_n,
-                "latent_dim": [4, 8],
-                "epochs": [100],
-                "device": [DEVICE],
-                "input_dim": [embedding_dim],
             }),
+            *sweep(CosineAdapter, {
+                "train_n": train_n,
+            }),
+            # *sweep(SmallAEAdapter, {
+            #     "train_n": train_n,
+            #     "latent_dim": [4, 8],
+            #     "epochs": [100],
+            #     "device": [DEVICE],
+            #     "input_dim": [embedding_dim],
+            # }),
             # TODO: add ep=500 (or 1000) to find the true convergence floor.
             # At ep=200 the loss still drops ~18% in the last 20% of training,
             # so the AE has not fully converged. If ep=500 EER stays above
             # GMM's ~0.140, the GMM argument holds unconditionally.
-            # *sweep(SmallAEAdapter, {
-            #     "train_n": train_n,
-            #     "latent_dim": [4],
-            #     "epochs": [30],
-            #     "threshold_mode": ["val", "train"],
-            #     "dropout_p": [0.0, 0.2],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
-            # })
+            *sweep(SmallAEAdapter, {
+                "train_n": train_n,
+                "latent_dim": [4],
+                "epochs": [30],
+                "threshold_mode": ["val", "train"],
+                "dropout_p": [0.0, 0.2],
+                "device": [DEVICE],
+                "input_dim": [embedding_dim],
+            })
         ]
 
     # --- Loop over providers ---
