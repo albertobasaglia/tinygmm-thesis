@@ -470,19 +470,23 @@ class PrototypeAdapter(Adapter):
 
     The simplest possible non-trivial baseline: collapse the enrolled
     samples to a single point and score by Euclidean distance to it.
-    Threshold is the given percentile of training-sample distances.
+    Threshold is the given percentile of held-out validation distances.
     """
 
-    def __init__(self, threshold_percentile=95, train_n=None):
+    def __init__(self, threshold_percentile=95, val_frac=0.25, train_n=None):
         super().__init__(train_n)
         self.threshold_percentile = threshold_percentile
+        self.val_frac = val_frac
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
-        self._prototype = budget.mean(axis=0)
-        self._dim = budget.shape[1]
-        train_scores = self.score(budget)
-        self.threshold = float(np.percentile(train_scores, self.threshold_percentile))
+        split = max(1, int(len(budget) * (1 - self.val_frac)))
+        train_emb, val_emb = budget[:split], budget[split:]
+        self._prototype = train_emb.mean(axis=0)
+        self._dim = train_emb.shape[1]
+        threshold_emb = val_emb if len(val_emb) > 0 else train_emb
+        val_scores = self.score(threshold_emb)
+        self.threshold = float(np.percentile(val_scores, self.threshold_percentile))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         return np.linalg.norm(emb - self._prototype, axis=1)
@@ -513,20 +517,24 @@ class CosineAdapter(Adapter):
 
     Mirrors the TinySV-style prototype matcher used as the comparison
     point in the related-work / neural-collapse argument.  Threshold is
-    the given percentile of training-sample scores.
+    the given percentile of held-out validation scores.
     """
 
-    def __init__(self, threshold_percentile=95, train_n=None):
+    def __init__(self, threshold_percentile=95, val_frac=0.25, train_n=None):
         super().__init__(train_n)
         self.threshold_percentile = threshold_percentile
+        self.val_frac = val_frac
 
     def fit(self, emb: np.ndarray):
         budget = self._get_budget(emb)
-        self._prototype = budget.mean(axis=0)
+        split = max(1, int(len(budget) * (1 - self.val_frac)))
+        train_emb, val_emb = budget[:split], budget[split:]
+        self._prototype = train_emb.mean(axis=0)
         self._proto_norm = float(np.linalg.norm(self._prototype))
-        self._dim = budget.shape[1]
-        train_scores = self.score(budget)
-        self.threshold = float(np.percentile(train_scores, self.threshold_percentile))
+        self._dim = train_emb.shape[1]
+        threshold_emb = val_emb if len(val_emb) > 0 else train_emb
+        val_scores = self.score(threshold_emb)
+        self.threshold = float(np.percentile(val_scores, self.threshold_percentile))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         dots = emb @ self._prototype
