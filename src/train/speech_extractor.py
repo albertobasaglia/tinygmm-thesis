@@ -25,6 +25,10 @@ parser.add_argument("--held_out_words", type=str,  nargs="+", default=[],
                     help="Word classes to exclude from training (e.g. --held_out_words yes no wow)")
 parser.add_argument("--resume_from", type=str, default=None, metavar="CKPT",
                     help="Path to a checkpoint to resume training from (restores epoch, optimizer, LR scheduler)")
+parser.add_argument("--channels", type=int, nargs="+", default=[32, 64, 128],
+                    help="Conv backbone channel widths (one entry per block). Default reproduces the original architecture.")
+parser.add_argument("--dropout", type=float, default=0.5,
+                    help="Dropout probability used in conv blocks and head. 0.0 disables dropout (useful for tiny channels).")
 
 args = parser.parse_args()
 
@@ -49,11 +53,16 @@ if __name__ == "__main__":
 
     if args.held_out_words:
         print(f"[*] Held-out words (not in training): {args.held_out_words}")
+    channels = tuple(args.channels)
     module = SpeechExtractorModule(dm.num_classes, args.embedding_dim, args.lr,
-                                   held_out_words=args.held_out_words or None)
+                                   held_out_words=args.held_out_words or None,
+                                   channels=channels,
+                                   dropout_p=args.dropout)
+    print(f"[*] Channels: {channels} | dropout: {args.dropout}")
     print(f"[*] Parameters: {sum(p.numel() for p in module.parameters()):,}")
 
-    ckpt_name = f"speech_extractor_emb{args.embedding_dim}_seed{args.seed}"
+    ch_str = "-".join(map(str, channels))
+    ckpt_name = f"speech_extractor_ch{ch_str}_emb{args.embedding_dim}_dp{args.dropout}_seed{args.seed}"
     logger = CSVLogger("logs", name="speech_extractor")
 
     trainer = L.Trainer(

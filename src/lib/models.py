@@ -6,27 +6,28 @@ import lightning as L
 class SpeechFeatureExtractor(nn.Module):
     """
     CNN trained on mel spectrograms of Google Speech Commands.
-    Backbone: conv stack → AdaptiveAvgPool → flat 128-D vector.
-    Bottleneck: 128 → (embedding_dim*2) → embedding_dim  (configurable).
+    Backbone: conv stack (one block per channel in `channels`) -> AdaptiveAvgPool -> flat vector.
+    Bottleneck: channels[-1] -> (embedding_dim*2) -> embedding_dim.
     Head: linear classifier, bypassed via return_embedding=True.
     """
-    def __init__(self, num_classes: int, embedding_dim: int = 32):
+    def __init__(self, num_classes: int, embedding_dim: int = 32,
+                 channels: tuple = (32, 64, 128), dropout_p: float = 0.5):
         super().__init__()
         inter_dim = max(embedding_dim * 2, 64)
 
-        self.backbone = nn.Sequential(
-            nn.Conv2d(1, 32,  3, padding=1), nn.BatchNorm2d(32),  nn.ReLU(), nn.MaxPool2d(2),
-            nn.Dropout2d(0.5),
-            nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64),  nn.ReLU(), nn.MaxPool2d(2),
-            nn.Dropout2d(0.5),
-            nn.Conv2d(64, 128,3, padding=1), nn.BatchNorm2d(128), nn.ReLU(),
-            nn.Dropout2d(0.5),
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Dropout(0.5),
-            nn.Flatten(),
-        )
+        layers = []
+        prev = 1
+        for i, ch in enumerate(channels):
+            layers += [nn.Conv2d(prev, ch, 3, padding=1), nn.BatchNorm2d(ch), nn.ReLU()]
+            if i < len(channels) - 1:
+                layers.append(nn.MaxPool2d(2))
+            layers.append(nn.Dropout2d(dropout_p))
+            prev = ch
+        layers += [nn.AdaptiveAvgPool2d((1, 1)), nn.Dropout(dropout_p), nn.Flatten()]
+        self.backbone = nn.Sequential(*layers)
+
         self.embedding_head = nn.Sequential(
-            nn.Linear(128, inter_dim), nn.ReLU(),
+            nn.Linear(channels[-1], inter_dim), nn.ReLU(),
             nn.Linear(inter_dim, embedding_dim), nn.ReLU(),
         )
         self.classifier = nn.Linear(embedding_dim, num_classes)
@@ -38,10 +39,13 @@ class SpeechFeatureExtractor(nn.Module):
 
 class SpeechExtractorModule(L.LightningModule):
     def __init__(self, num_classes: int, embedding_dim: int, lr: float,
-                 held_out_words: list = None):
+                 held_out_words: list = None, channels: tuple = (32, 64, 128),
+                 dropout_p: float = 0.5):
         super().__init__()
         self.save_hyperparameters()
-        self.model     = SpeechFeatureExtractor(num_classes, embedding_dim)
+        self.model     = SpeechFeatureExtractor(num_classes, embedding_dim,
+                                                channels=tuple(channels),
+                                                dropout_p=dropout_p)
         self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, x: torch.Tensor, return_embedding: bool = False) -> torch.Tensor:
