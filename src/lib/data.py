@@ -149,6 +149,16 @@ def _wisdm_root(data_dir: str | Path) -> Path:
     return Path(data_dir) / WISDM_DIR
 
 
+def _find_wisdm_watch_dir(root: Path) -> Path | None:
+    """Find the `raw/watch` directory anywhere under root, since the archive's
+    top-level folder name has varied between UCI mirrors / re-uploads."""
+    for accel in root.rglob("accel"):
+        watch = accel.parent
+        if watch.name == "watch" and (watch / "gyro").is_dir():
+            return watch
+    return None
+
+
 def _wisdm_aligned_parquet(data_dir: str | Path) -> Path:
     return _wisdm_root(data_dir) / "watch_aligned.parquet"
 
@@ -160,8 +170,7 @@ def _download_wisdm(data_dir: str | Path) -> None:
     zipfile module raises EOFError mid-extraction on some members.
     """
     root = _wisdm_root(data_dir)
-    raw_watch = root / "wisdm-dataset" / "raw" / "watch"
-    if raw_watch.exists():
+    if _find_wisdm_watch_dir(root) is not None:
         return
     root.mkdir(parents=True, exist_ok=True)
     zip_path = root / "wisdm-dataset.zip"
@@ -193,10 +202,14 @@ def _download_wisdm(data_dir: str | Path) -> None:
         ["unzip", "-q", "-o", str(zip_path), "-d", str(root)],
         check=True,
     )
-    if not raw_watch.exists():
+    if _find_wisdm_watch_dir(root) is None:
+        layout = "\n".join(
+            f"  {p.relative_to(root)}" for p in sorted(root.rglob("*"))
+            if p.is_dir() and len(p.relative_to(root).parts) <= 3
+        )
         raise RuntimeError(
-            f"After unpacking, expected directory {raw_watch} does not exist. "
-            f"Archive layout may have changed."
+            f"After unpacking, could not find a `raw/watch` directory under {root}.\n"
+            f"Top-level layout:\n{layout}"
         )
 
 
@@ -234,7 +247,12 @@ def _align_wisdm(data_dir: str | Path) -> pd.DataFrame:
         return pd.read_parquet(cache)
 
     _download_wisdm(data_dir)
-    root = _wisdm_root(data_dir) / "wisdm-dataset" / "raw" / "watch"
+    root = _find_wisdm_watch_dir(_wisdm_root(data_dir))
+    if root is None:
+        raise RuntimeError(
+            f"No `raw/watch` directory under {_wisdm_root(data_dir)}. "
+            f"Did download/unpack succeed?"
+        )
     accel_files = sorted((root / "accel").glob("data_*_accel_watch.txt"))
     gyro_files = sorted((root / "gyro").glob("data_*_gyro_watch.txt"))
     if not accel_files or not gyro_files:
