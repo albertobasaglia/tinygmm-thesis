@@ -187,13 +187,10 @@ def main():
     elif PROVIDER == "speech":
         # --- Speech provider: Google Speech Commands + trained extractor ---
         TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final eval
-        # ckpt_path = ROOT / "logs/speech_extractor/version_3/checkpoints/speech_extractor_emb16_seed42.ckpt"
-        # ckpt_path = ROOT / "logs/speech_extractor/version_8/checkpoints/speech_extractor_emb8_seed42.ckpt"
-        # ckpt_path = ROOT / "best_16.ckpt"
-        ckpt_path = ROOT / "test_8.ckpt"
-        # ckpt_path = ROOT / "logs/speech_extractor/version_14/checkpoints/speech_extractor_ch16-32_emb16_dp0.0_seed42.ckpt"
+        ckpt_path = ROOT / "best_16.ckpt"
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
         held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
+        embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
         if MAX_TARGET_CLASSES is not None:
             held_out = held_out[:MAX_TARGET_CLASSES]
         held_out = [w for w in held_out if w not in TEST_WORDS]
@@ -201,7 +198,7 @@ def main():
         log.info("Test words (excluded): %s", sorted(TEST_WORDS))
 
         providers = [
-            SpeechEmbeddingProvider(ckpt_path, 8, ROOT / "data",
+            SpeechEmbeddingProvider(ckpt_path, embedding_dim, ROOT / "data",
                                     target_class=w,
                                     other_classes=[o for o in held_out if o != w],
                                     device=DEVICE)
@@ -260,21 +257,21 @@ def main():
             #     "device": [DEVICE],
             #     "input_dim": [embedding_dim],
             # })
-            # *sweep(GMMAdapter, {
-            #     "train_n": train_n,
-            #     "n_components": [1, 2, 3],
-            #     "covariance_type": ["diag", "full", "spherical"],
-            # }),
-            # *sweep(KNNAdapter, {
-            #     "train_n": train_n,
-            #     "k": list(range(1, 5, 1)),
-            # }),
-            # *sweep(PrototypeAdapter, {
-            #     "train_n": train_n,
-            # }),
-            # *sweep(CosineAdapter, {
-            #     "train_n": train_n,
-            # }),
+            *sweep(GMMAdapter, {
+                "train_n": train_n,
+                "n_components": [1, 2, 3],
+                "covariance_type": ["diag", "full", "spherical"],
+            }),
+            *sweep(KNNAdapter, {
+                "train_n": train_n,
+                "k": list(range(1, 6, 1)),
+            }),
+            *sweep(PrototypeAdapter, {
+                "train_n": train_n,
+            }),
+            *sweep(CosineAdapter, {
+                "train_n": train_n,
+            }),
             *sweep(SmallAEAdapter, {
                 "train_n": train_n,
                 "latent_dim": [4, 8],

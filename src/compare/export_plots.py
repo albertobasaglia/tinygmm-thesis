@@ -4,15 +4,16 @@ Export thesis plots to PDF.
 Usage:
     python -m src.compare.export_plots
 
-Reads results/sweep.parquet and writes PDFs to tinygmm-tex/figures/.
+Reads results/sweep_speech_latest.parquet and writes 12 PDFs to
+tinygmm-tex/figures/.  Also prints headline numbers (best-of-each adapter at
+train_n=45) for the inline LaTeX table in results.tex.
 
-Plot structure (matches thesis narrative):
-  A. Hyperparameter selection  (appendix)
-  B. Main comparison           (best-of-each: GMM vs kNN vs AE)
-  C. Statistical confidence    (CI error bars)
-  D. AE convergence            (loss curves)
-  E. Computational cost        (FLOPs vs EER, Pareto frontiers)
-  F. Per-word robustness       (EER per target word)
+Plot structure (matches the results chapter):
+  A. Hyperparameter selection  (covariance, K, k, AE dropout)
+  B. Main adapter comparison   (best-of-each)
+  C. Statistical confidence    (95% CI bar charts)
+  D. Computational cost        (inference FLOPs + Pareto)
+  E. Final test on held-out words (test_summary table + 2 figures)
 """
 
 from pathlib import Path
@@ -23,23 +24,18 @@ import pandas as pd
 from scipy import stats
 
 from .plots import (
-    _filter, _agg, _plot_line,
+    _filter, _plot_line,
     plot_eer,
     plot_lines,
     plot_gmm_components,
     plot_gmm_diag_vs_full,
-    plot_loss_curves,
     plot_pareto,
 )
 
 ROOT = Path(__file__).parent.parent.parent
 OUT = ROOT / "tinygmm-tex" / "figures"
 
-
-# --- Thesis rcParams ---
-# Figure width: ~13 cm text width on A4 = 5.12 in
 FULL_W = 5.12
-HALF_W = 2.5
 H = 3.0
 
 plt.rcParams.update({
@@ -61,52 +57,64 @@ def save(name: str):
     print(f"  saved {name}.pdf")
 
 
-def main():
-    OUT.mkdir(parents=True, exist_ok=True)
+# Headline configurations
+GMM_BEST       = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
+KNN_BEST       = {"p_adapter": "KNNAdapter", "p_k": 5}
+AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}
+COSINE_BEST    = {"p_adapter": "CosineAdapter"}
+PROTOTYPE_BEST = {"p_adapter": "PrototypeAdapter"}
 
-    sweep_path = ROOT / "results" / "sweep_speech_latest.parquet"
-    df = pd.read_parquet(sweep_path)
-    print(f"Loaded {len(df)} rows from {sweep_path.name}")
-    print(f"Writing PDFs to {OUT}\n")
+BEST_LINES = [
+    ("GMM K=1 diag", GMM_BEST),
+    ("kNN k=5",      KNN_BEST),
+    ("SmallAE",      AE_BEST),
+    ("Cosine",       COSINE_BEST),
+    ("Prototype",    PROTOTYPE_BEST),
+]
 
-    # ------------------------------------------------------------------
-    # Best-of-each configs (from sweep results)
-    # ------------------------------------------------------------------
-    GMM_BEST       = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
-    KNN_BEST       = {"p_adapter": "KNNAdapter", "p_k": 5}
-    AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}
-    PROTOTYPE_BEST = {"p_adapter": "PrototypeAdapter"}
-    COSINE_BEST    = {"p_adapter": "CosineAdapter"}
+PARETO_LINES = [
+    ("SmallAE",   {"p_adapter": "SmallAEAdapter"}),
+    ("GMM",       {"p_adapter": "GMMAdapter"}),
+    ("kNN",       {"p_adapter": "KNNAdapter"}),
+    ("Cosine",    {"p_adapter": "CosineAdapter"}),
+    ("Prototype", {"p_adapter": "PrototypeAdapter"}),
+]
 
-    FIXED_TRAIN_N = 45  # mid-budget comparison point (few-shot regime)
+FIXED_TRAIN_N = 45
 
-    best_lines = [
-        ("GMM K=1 diag", GMM_BEST),
-        ("kNN k=5",      KNN_BEST),
-        ("SmallAE",      AE_BEST),
-        ("Cosine",       COSINE_BEST),
-        ("Prototype",    PROTOTYPE_BEST),
-    ]
 
-    # ==================================================================
-    # A. HYPERPARAMETER SELECTION (appendix)
-    # ==================================================================
+def _ci_plot(ax, metric, sub, lines, xlabel):
+    for i, (label, where) in enumerate(lines):
+        vals = _filter(sub, where)[metric]
+        if vals.empty:
+            continue
+        mean = vals.mean()
+        n = len(vals)
+        sem = vals.std() / np.sqrt(n)
+        t_crit = stats.t.ppf(0.975, df=n - 1)
+        ci = t_crit * sem
+        ax.errorbar(mean, i, xerr=ci, fmt="o", capsize=5, markersize=6)
+        ax.text(mean + ci + 0.005, i, f"{mean:.3f}", va="center", fontsize=9)
+    ax.set_yticks(range(len(lines)))
+    ax.set_yticklabels([c[0] for c in lines])
+    ax.set_xlabel(xlabel)
+    ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.3)
+
+
+def section_hyperparam(df: pd.DataFrame):
     print("A. Hyperparameter selection")
 
-    # A1. GMM covariance type comparison
     plot_gmm_diag_vs_full(df, y="m_eer")
     save("gmm_cov_eer")
 
-    # A2. GMM number of components
     plot_gmm_components(df, y="m_eer", fixed_train_n=FIXED_TRAIN_N)
     save("gmm_components_eer")
 
-    # A3. kNN: EER vs k at fixed train_n
     knn_sub = _filter(df, {"p_adapter": "KNNAdapter"})
     knn_sub = knn_sub[knn_sub["p_train_n"] == FIXED_TRAIN_N]
     fig, ax = plt.subplots()
-    agg = knn_sub.groupby("p_k")["m_eer"].agg(["mean", "std", "count"]).reset_index()
-    agg = agg.sort_values("p_k")
+    agg = knn_sub.groupby("p_k")["m_eer"].agg(["mean", "std"]).reset_index().sort_values("p_k")
     ax.bar(agg["p_k"], agg["mean"], yerr=agg["std"], capsize=3)
     ax.set_xlabel("k")
     ax.set_ylabel("EER")
@@ -116,7 +124,6 @@ def main():
     fig.tight_layout()
     save("knn_k_selection")
 
-    # A4. AE dropout ablation
     dropout_lines = [
         ("AE no-dropout",    {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
                               "p_dropout_p": 0.0}),
@@ -127,81 +134,46 @@ def main():
     plt.title("AE dropout ablation")
     save("ae_dropout_eer")
 
-    # ==================================================================
-    # B. MAIN COMPARISON (best-of-each)
-    # ==================================================================
+
+def section_compare(df: pd.DataFrame):
     print("B. Main comparison")
 
-    plot_eer(df, lines=best_lines)
+    plot_eer(df, lines=BEST_LINES)
     save("compare_eer")
 
-    plot_lines(df, x="p_train_n", y="m_auc", lines=best_lines)
+    plot_lines(df, x="p_train_n", y="m_auc", lines=BEST_LINES)
     save("compare_auc")
 
-    plot_lines(df, x="p_train_n", y="m_acc_at_far5", lines=best_lines)
+    plot_lines(df, x="p_train_n", y="m_acc_at_far5", lines=BEST_LINES)
     plt.ylabel("ACC @ FAR=5%")
     plt.title("Accuracy at FAR=5% vs enrollment budget")
     save("compare_acc_at_far")
 
-    # ==================================================================
-    # C. STATISTICAL CONFIDENCE
-    # ==================================================================
+
+def section_confidence(df: pd.DataFrame):
     print("C. Statistical confidence")
-
-    def _ci_plot(ax, metric, sub, lines, xlabel):
-        for i, (label, where) in enumerate(lines):
-            vals = _filter(sub, where)[metric]
-            if vals.empty:
-                continue
-            mean = vals.mean()
-            n = len(vals)
-            sem = vals.std() / np.sqrt(n)
-            t_crit = stats.t.ppf(0.975, df=n - 1)
-            ci = t_crit * sem
-            ax.errorbar(mean, i, xerr=ci, fmt="o", capsize=5, markersize=6)
-            ax.text(mean + ci + 0.005, i, f"{mean:.3f}", va="center", fontsize=9)
-        ax.set_yticks(range(len(lines)))
-        ax.set_yticklabels([c[0] for c in lines])
-        ax.set_xlabel(xlabel)
-        ax.invert_yaxis()
-        ax.grid(axis="x", alpha=0.3)
-
     sub = df[df["p_train_n"] == FIXED_TRAIN_N]
 
     fig, ax = plt.subplots()
-    _ci_plot(ax, "m_eer", sub, best_lines, "EER (lower is better)")
+    _ci_plot(ax, "m_eer", sub, BEST_LINES, "EER (lower is better)")
     ax.set_title(f"EER with 95% CI (train_n={FIXED_TRAIN_N})")
     fig.tight_layout()
     save("ci_eer")
 
     fig, ax = plt.subplots()
-    _ci_plot(ax, "m_acc_at_far5", sub, best_lines, "ACC @ FAR=5% (higher is better)")
+    _ci_plot(ax, "m_acc_at_far5", sub, BEST_LINES, "ACC @ FAR=5% (higher is better)")
     ax.set_title(f"ACC @ FAR=5% with 95% CI (train_n={FIXED_TRAIN_N})")
     fig.tight_layout()
     save("ci_acc_at_far5")
 
-    # ==================================================================
-    # D. AE CONVERGENCE
-    # ==================================================================
-    print("D. AE convergence")
 
-    loss_lines = [
-        ("SmallAE lat=8 ep=100", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}),
-    ]
-    if "m_val_loss_1" in df.columns and not _filter(df, loss_lines[0][1]).empty:
-        plot_loss_curves(df, lines=loss_lines)
-        save("ae_loss_curves")
+def section_cost(df: pd.DataFrame):
+    print("D. Computational cost")
 
-    # ==================================================================
-    # E. COMPUTATIONAL COST
-    # ==================================================================
-    print("E. Computational cost")
-
-    # E1. Inference FLOPs bar chart (best-of-each, at fixed train_n)
     fig, ax = plt.subplots()
     labels, flops = [], []
     sub_fixed = df[df["p_train_n"] == FIXED_TRAIN_N]
-    for label, where in best_lines:
+    for label, where in BEST_LINES:
         vals = _filter(sub_fixed, where)["m_inference_flops"].dropna()
         if vals.empty:
             continue
@@ -215,12 +187,10 @@ def main():
     fig.tight_layout()
     save("inference_flops_bar")
 
-    # E1b. Inference FLOPs vs train_n (shows kNN scaling)
     fig, ax = plt.subplots()
-    for label, where in best_lines:
+    for label, where in BEST_LINES:
         sub = _filter(df, where)
-        agg = sub.groupby("p_train_n")["m_inference_flops"].mean().reset_index()
-        agg = agg.sort_values("p_train_n")
+        agg = sub.groupby("p_train_n")["m_inference_flops"].mean().reset_index().sort_values("p_train_n")
         ax.plot(agg["p_train_n"], agg["m_inference_flops"], marker="o", label=label)
     ax.set_xlabel("Enrollment size (train_n)")
     ax.set_ylabel("Inference FLOPs per sample")
@@ -230,232 +200,161 @@ def main():
     fig.tight_layout()
     save("inference_flops_vs_train_n")
 
-    # E2. Training FLOPs vs EER
-    fig, ax = plt.subplots()
-    for label, where in best_lines:
-        sub = _filter(df, where)
-        if sub.empty:
-            continue
-        agg = _agg(sub, "m_training_flops", "m_eer")
-        ax.plot(agg["m_training_flops"], agg["mean"], marker="o", label=label)
-    ax.set_xscale("log")
-    ax.set_xlabel("Training FLOPs")
-    ax.set_ylabel("EER")
-    ax.set_title("EER vs training cost")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    save("flops_training_eer")
-
-    # E3. Pareto frontiers
-    pareto_lines = [
-        ("SmallAE",   {"p_adapter": "SmallAEAdapter"}),
-        ("GMM",       {"p_adapter": "GMMAdapter"}),
-        ("kNN",       {"p_adapter": "KNNAdapter"}),
-        ("Cosine",    {"p_adapter": "CosineAdapter"}),
-        ("Prototype", {"p_adapter": "PrototypeAdapter"}),
-    ]
-    plot_pareto(df, lines=pareto_lines, x="m_training_flops")
-    save("pareto_training")
-
-    plot_pareto(df, lines=pareto_lines, x="m_inference_flops")
+    plot_pareto(df, lines=PARETO_LINES, x="m_inference_flops")
     save("pareto_inference")
 
-    # ==================================================================
-    # F. PER-WORD ROBUSTNESS
-    # ==================================================================
-    print("F. Per-word robustness")
 
-    sub = df[df["p_train_n"] == FIXED_TRAIN_N]
-    words = sorted(df["p_target_class"].unique())
-    x = np.arange(len(words))
-    width = 0.8 / len(best_lines)
+def section_final_test():
+    """Generate test_summary.tex and 2 figures from results/test_speech.parquet."""
+    test_path = ROOT / "results" / "test_speech.parquet"
+    if not test_path.exists():
+        print(f"E. Final test skipped ({test_path.name} not found)")
+        return
+    print("E. Final test")
+    test_df = pd.read_parquet(test_path)
 
-    fig, ax = plt.subplots(figsize=(FULL_W, H + 0.5))
-    for i, (label, where) in enumerate(best_lines):
-        means = [
-            _filter(sub, where).groupby("p_target_class")["m_eer"].mean().get(w, float("nan"))
-            for w in words
-        ]
-        offset = (i - len(best_lines) / 2 + 0.5) * width
-        ax.bar(x + offset, means, width=width, label=label)
+    TEST_TRAIN_N = 95
+    slice_at = test_df[test_df["p_train_n"] == TEST_TRAIN_N]
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(words, rotation=30, ha="right")
-    ax.set_ylabel("EER")
-    ax.set_title(f"EER by target word (train_n={FIXED_TRAIN_N})")
-    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5),
-              frameon=False)
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-    save("eer_per_word")
+    adapter_labels = {
+        "GMMAdapter":       "GMM K=1 diag",
+        "CosineAdapter":    "Cosine",
+        "KNNAdapter":       "kNN k=5",
+        "PrototypeAdapter": "Prototype",
+        "SmallAEAdapter":   "SmallAE lat=8 ep=100",
+    }
+    # Order by EER at TEST_TRAIN_N
+    order = (slice_at.groupby("p_adapter")["m_eer"].mean()
+             .sort_values().index.tolist())
+    adapters = [a for a in order if a in adapter_labels]
 
-    fig, ax = plt.subplots(figsize=(FULL_W, H + 0.5))
-    for i, (label, where) in enumerate(best_lines):
-        means = [
-            _filter(sub, where).groupby("p_target_class")["m_acc_at_far5"].mean().get(w, float("nan"))
-            for w in words
-        ]
-        offset = (i - len(best_lines) / 2 + 0.5) * width
-        ax.bar(x + offset, means, width=width, label=label)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(words, rotation=30, ha="right")
-    ax.set_ylabel("ACC @ FAR=5%")
-    ax.set_title(f"ACC @ FAR=5% by target word (train_n={FIXED_TRAIN_N})")
-    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5),
-              frameon=False)
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-    save("acc_at_far5_per_word")
-
-    # ==================================================================
-    # G. FINAL TEST (held-out TEST_WORDS)
-    # ==================================================================
-    test_path = ROOT / "results" / "test.parquet"
-    if test_path.exists():
-        print("G. Final test")
-        test_df = pd.read_parquet(test_path)
-        print(f"  loaded {len(test_df)} rows | adapters: {test_df['p_adapter'].unique().tolist()}")
-
-        # Single-train_n slice used for headline numbers (table, CI bar, boxplot, t-test, FAR-recall)
-        TEST_TRAIN_N = 95
-        if "p_train_n" in test_df.columns and TEST_TRAIN_N in set(test_df["p_train_n"]):
-            test_slice = test_df[test_df["p_train_n"] == TEST_TRAIN_N]
-        else:
-            test_slice = test_df
-
-        # G1. Summary table (LaTeX)
-        tables_dir = ROOT / "tinygmm-tex" / "tables"
-        tables_dir.mkdir(parents=True, exist_ok=True)
-        metric_labels = {
-            "m_eer": "EER",
-            "m_auc": "AUC",
-            "m_auprc": "AUPRC",
-            "m_acc_at_far5": "ACC@FAR=5\\%",
-        }
-        metrics = [m for m in metric_labels if m in test_slice.columns]
-        adapter_labels = {
-            "GMMAdapter": "GMM K=1 diag",
-            "SmallAEAdapter": "SmallAE lat=8 ep=100",
-            "CosineAdapter": "Cosine",
-            "PrototypeAdapter": "Prototype",
-        }
-        agg = test_slice.groupby("p_adapter")[metrics].agg(["mean", "std"])
-        col_header = " & ".join(metric_labels[m] for m in metrics)
-        rows = []
-        for adapter_key, label in adapter_labels.items():
-            if adapter_key not in agg.index:
-                continue
-            cells = " & ".join(
-                f"{agg.loc[adapter_key, (m, 'mean')]:.3f} $\\pm$ {agg.loc[adapter_key, (m, 'std')]:.3f}"
-                for m in metrics
-            )
-            rows.append(f"    {label} & {cells} \\\\")
-        n_cols = 1 + len(metrics)
-        col_spec = "l" + "r" * len(metrics)
-        tex = "\n".join([
-            "\\begin{table}[htbp]",
-            "  \\centering",
-            "  \\caption{Final-test metrics on the 5 held-out words"
-            f" at train\\_n={TEST_TRAIN_N}"
-            " (mean $\\pm$ std across 5 words $\\times$ 10 trials).}",
-            "  \\label{tab:test_summary}",
-            "  \\resizebox{\\textwidth}{!}{%",
-            f"  \\begin{{tabular}}{{{col_spec}}}",
-            "    \\toprule",
-            f"    Adapter & {col_header} \\\\",
-            "    \\midrule",
-            "\n".join(rows),
-            "    \\bottomrule",
-            "  \\end{tabular}%",
-            "  }",
-            "\\end{table}",
-        ])
-        (tables_dir / "test_summary.tex").write_text(tex + "\n")
-        print("  saved tables/test_summary.tex")
-
-        # G2. EER bar chart with 95% CI
-        adapters = [a for a in adapter_labels if a in test_slice["p_adapter"].unique()]
-        tick_labels = [adapter_labels[a] for a in adapters]
-        means, margins = [], []
-        for a in adapters:
-            vals = test_slice.loc[test_slice["p_adapter"] == a, "m_eer"].dropna()
-            n = len(vals)
-            mean = vals.mean()
-            sem = vals.std(ddof=1) / np.sqrt(n)
-            t_crit = stats.t.ppf(0.975, df=n - 1)
-            means.append(mean)
-            margins.append(t_crit * sem)
-        fig, ax = plt.subplots()
-        bar_palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
-        ax.bar(tick_labels, means, yerr=margins, capsize=6,
-               color=bar_palette[:len(adapters)])
-        ax.set_ylabel("EER")
-        ax.set_title(f"Final test EER (5 held-out words, train_n={TEST_TRAIN_N}, 95% CI)")
-        ax.grid(axis="y", alpha=0.3)
-        plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
-        fig.tight_layout()
-        save("test_eer_ci")
-
-        # G3. Paired t-test GMM vs SmallAE (stdout only)
-        if set(adapters) >= {"GMMAdapter", "SmallAEAdapter"}:
-            idx = ["p_trial", "p_target_class"]
-            gmm_eer = test_slice[test_slice["p_adapter"] == "GMMAdapter"].set_index(idx)["m_eer"]
-            ae_eer = test_slice[test_slice["p_adapter"] == "SmallAEAdapter"].set_index(idx)["m_eer"]
-            paired = pd.concat([gmm_eer.rename("gmm"), ae_eer.rename("ae")], axis=1).dropna()
-            diff = paired["ae"] - paired["gmm"]
-            t, p = stats.ttest_rel(paired["ae"], paired["gmm"])
-            cohen_d = diff.mean() / diff.std(ddof=1)
-            print(
-                f"  paired t-test (AE - GMM) at train_n={TEST_TRAIN_N}: n={len(paired)}  "
-                f"mean={diff.mean():+.4f}  d={cohen_d:+.3f}  t={t:+.3f}  p={p:.4g}"
-            )
-
-        # G4. EER boxplot
-        data = [test_slice.loc[test_slice["p_adapter"] == a, "m_eer"].dropna().values for a in adapters]
-        fig, ax = plt.subplots()
-        bp = ax.boxplot(
-            data, tick_labels=tick_labels, patch_artist=True, showmeans=True,
-            meanprops={"marker": "D", "markerfacecolor": "white", "markeredgecolor": "black"},
+    # E1. LaTeX summary table
+    tables_dir = ROOT / "tinygmm-tex" / "tables"
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    metric_labels = {"m_eer": "EER", "m_auc": "AUC",
+                     "m_auprc": "AUPRC", "m_acc_at_far5": "ACC@FAR=5\\%"}
+    metrics = list(metric_labels)
+    agg = slice_at.groupby("p_adapter")[metrics].agg(["mean", "std"])
+    rows = []
+    for a in adapters:
+        cells = " & ".join(
+            f"{agg.loc[a, (m, 'mean')]:.3f} $\\pm$ {agg.loc[a, (m, 'std')]:.3f}"
+            for m in metrics
         )
-        for patch, color in zip(bp["boxes"], bar_palette[:len(adapters)]):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.6)
-        ax.set_ylabel("EER")
-        ax.set_title(f"Final test EER distribution (5 words x 10 trials, train_n={TEST_TRAIN_N})")
-        ax.grid(axis="y", alpha=0.3)
-        plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
-        fig.tight_layout()
-        save("test_eer_box")
+        rows.append(f"    {adapter_labels[a]} & {cells} \\\\")
+    tex = "\n".join([
+        "\\begin{table}[htbp]",
+        "  \\centering",
+        "  \\caption{Final-test metrics on the 5 held-out test words"
+        f" at \\texttt{{train\\_n}}={TEST_TRAIN_N}"
+        " (mean $\\pm$ std across 5 words $\\times$ 10 trials).}",
+        "  \\label{tab:test_summary}",
+        "  \\resizebox{\\textwidth}{!}{%",
+        f"  \\begin{{tabular}}{{l{'r' * len(metrics)}}}",
+        "    \\toprule",
+        "    Adapter & " + " & ".join(metric_labels[m] for m in metrics) + " \\\\",
+        "    \\midrule",
+        "\n".join(rows),
+        "    \\bottomrule",
+        "  \\end{tabular}%",
+        "  }",
+        "\\end{table}",
+    ])
+    (tables_dir / "test_summary.tex").write_text(tex + "\n")
+    print("  saved tables/test_summary.tex")
 
-        # G5. Metrics vs train_n on the test set
-        def _metric_vs_train_n(metric: str, ylabel: str, fname: str):
-            fig, ax = plt.subplots()
-            for a, color in zip(adapters, bar_palette):
-                sub = test_df[test_df["p_adapter"] == a]
-                agg_tn = sub.groupby("p_train_n")[metric].agg(["mean", "std", "count"]).reset_index()
-                agg_tn = agg_tn.sort_values("p_train_n")
-                ci = 1.96 * agg_tn["std"] / np.sqrt(agg_tn["count"])
-                ax.plot(agg_tn["p_train_n"], agg_tn["mean"], marker="o",
-                        label=adapter_labels[a], color=color)
-                ax.fill_between(agg_tn["p_train_n"],
-                                agg_tn["mean"] - ci, agg_tn["mean"] + ci,
-                                alpha=0.15, color=color)
-            ax.set_xlabel("Enrollment size (train_n)")
-            ax.set_ylabel(ylabel)
-            ax.set_title(f"Final test: {ylabel} vs enrollment budget (5 held-out words)")
-            ax.legend(fontsize=7)
-            ax.grid(alpha=0.3)
-            fig.tight_layout()
-            save(fname)
+    palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
+    tick_labels = [adapter_labels[a] for a in adapters]
 
-        if "p_train_n" in test_df.columns and test_df["p_train_n"].nunique() > 1:
-            _metric_vs_train_n("m_eer",          "EER",          "test_eer_vs_train_n")
-            _metric_vs_train_n("m_auc",          "AUC",          "test_auc_vs_train_n")
-            _metric_vs_train_n("m_acc_at_far5",  "ACC @ FAR=5%", "test_acc_at_far5_vs_train_n")
-    else:
-        print(f"G. Final test skipped ({test_path} not found)")
+    # E2. EER bar chart with 95% CI at train_n=95
+    means, margins = [], []
+    for a in adapters:
+        vals = slice_at.loc[slice_at["p_adapter"] == a, "m_eer"].dropna()
+        n = len(vals)
+        sem = vals.std(ddof=1) / np.sqrt(n)
+        t_crit = stats.t.ppf(0.975, df=n - 1)
+        means.append(vals.mean())
+        margins.append(t_crit * sem)
+    fig, ax = plt.subplots()
+    ax.bar(tick_labels, means, yerr=margins, capsize=6, color=palette[:len(adapters)])
+    ax.set_ylabel("EER")
+    ax.set_title(f"Final-test EER (5 held-out words, train_n={TEST_TRAIN_N}, 95% CI)")
+    ax.grid(axis="y", alpha=0.3)
+    plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
+    fig.tight_layout()
+    save("test_eer_ci")
+
+    # E3. EER vs train_n
+    fig, ax = plt.subplots()
+    for a, color in zip(adapters, palette):
+        sub = test_df[test_df["p_adapter"] == a]
+        agg_tn = sub.groupby("p_train_n")["m_eer"].agg(["mean", "std", "count"]).reset_index()
+        agg_tn = agg_tn.sort_values("p_train_n")
+        ci = 1.96 * agg_tn["std"] / np.sqrt(agg_tn["count"])
+        ax.plot(agg_tn["p_train_n"], agg_tn["mean"], marker="o",
+                label=adapter_labels[a], color=color)
+        ax.fill_between(agg_tn["p_train_n"],
+                        agg_tn["mean"] - ci, agg_tn["mean"] + ci,
+                        alpha=0.15, color=color)
+    ax.set_xlabel("Enrollment size (train_n)")
+    ax.set_ylabel("EER")
+    ax.set_title("Final-test EER vs enrollment budget (5 held-out words)")
+    ax.legend(fontsize=7)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    save("test_eer_vs_train_n")
+
+    # Paired t-test: GMM vs SmallAE at TEST_TRAIN_N
+    if {"GMMAdapter", "SmallAEAdapter"}.issubset(set(adapters)):
+        idx = ["p_trial", "p_target_class"]
+        gmm_eer = slice_at[slice_at["p_adapter"] == "GMMAdapter"].set_index(idx)["m_eer"]
+        ae_eer = slice_at[slice_at["p_adapter"] == "SmallAEAdapter"].set_index(idx)["m_eer"]
+        paired = pd.concat([gmm_eer.rename("gmm"), ae_eer.rename("ae")], axis=1).dropna()
+        diff = paired["ae"] - paired["gmm"]
+        t, p = stats.ttest_rel(paired["ae"], paired["gmm"])
+        d = diff.mean() / diff.std(ddof=1)
+        print(f"  paired t-test (AE - GMM) at train_n={TEST_TRAIN_N}: "
+              f"n={len(paired)}  mean={diff.mean():+.4f}  d={d:+.3f}  "
+              f"t={t:+.3f}  p={p:.4g}")
+
+
+def print_headline_table(df: pd.DataFrame):
+    """Print headline numbers for the inline LaTeX table in results.tex."""
+    print()
+    print(f"Headline numbers @ train_n={FIXED_TRAIN_N} (mean over 10 trials x 10 target classes):")
+    print()
+    sub = df[df["p_train_n"] == FIXED_TRAIN_N]
+    fmt = "  {:<14} {:>8} {:>8} {:>8} {:>10} {:>8}"
+    print(fmt.format("Adapter", "EER", "AUC", "ACC@5%", "InfFLOPs", "Params"))
+    print(fmt.format("-------", "---", "---", "------", "--------", "------"))
+    for label, where in BEST_LINES:
+        s = _filter(sub, where)
+        if s.empty:
+            continue
+        print(fmt.format(
+            label,
+            f"{s['m_eer'].mean():.3f}",
+            f"{s['m_auc'].mean():.3f}",
+            f"{s['m_acc_at_far5'].mean():.3f}",
+            f"{s['m_inference_flops'].mean():.0f}",
+            f"{s['m_parameters'].mean():.0f}",
+        ))
+
+
+def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    sweep_path = ROOT / "results" / "sweep_speech_latest.parquet"
+    df = pd.read_parquet(sweep_path)
+    print(f"Loaded {len(df)} rows from {sweep_path.name}")
+    print(f"Writing PDFs to {OUT}\n")
+
+    section_hyperparam(df)
+    section_compare(df)
+    section_confidence(df)
+    section_cost(df)
+    section_final_test()
+    print_headline_table(df)
 
     print("\nDone.")
 

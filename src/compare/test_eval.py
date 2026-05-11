@@ -39,7 +39,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    PROVIDER = "har"  # one of: "pendigits", "speech", "har"
+    PROVIDER = "speech"  # one of: "pendigits", "speech", "har"
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
@@ -55,8 +55,18 @@ def main():
     TRAIN_N_VALUES = list(range(5, 100, 10))
 
     if PROVIDER == "speech":
-        ckpt_path = ROOT / "logs/speech_extractor/version_14/checkpoints/speech_extractor_ch16-32_emb16_dp0.0_seed42.ckpt"
+        ckpt_path = ROOT / "best_16.ckpt"
+        meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
+        held_out = set(meta["hyper_parameters"].get("held_out_words") or [])
+        embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
+
         TEST_WORDS = ["visual", "five", "seven", "no", "off"]
+        missing = [w for w in TEST_WORDS if w not in held_out]
+        if missing:
+            raise ValueError(
+                f"TEST_WORDS {missing} were not in held_out_words "
+                f"(={sorted(held_out)}); checkpoint can't be used for final eval."
+            )
 
         CONFIGS = [
             ("GMM-final", GMMAdapter, {
@@ -69,6 +79,7 @@ def main():
                 "device": DEVICE,
                 "input_dim": embedding_dim,
             }),
+            ("kNN-final", KNNAdapter, {"k": 5}),
             ("Cosine-final", CosineAdapter, {}),
             ("Prototype-final", PrototypeAdapter, {}),
         ]
