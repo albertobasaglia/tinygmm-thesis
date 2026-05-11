@@ -8,7 +8,9 @@ Edit CHECKPOINTS and make_configs() to control what gets compared.
 Results are saved as a Parquet file in results/.
 """
 
+import argparse
 import cProfile
+import importlib
 import io
 import logging
 import pstats
@@ -27,12 +29,8 @@ from embeddings.tabular import TabularEmbeddingProvider
 from embeddings.speech import SpeechEmbeddingProvider
 from embeddings.har import HAREmbeddingProvider
 
-from .adapters import (
-    AutoencoderAdapter, SmallAEAdapter, GMMAdapter, KNNAdapter,
-    PrototypeAdapter, CosineAdapter, SkipConfig,
-)
+from .adapters import SkipConfig
 from .metrics import evaluate
-from .sweep import sweep
 
 log = logging.getLogger(__name__)
 
@@ -66,9 +64,17 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    PROVIDER = "har"  # one of: "pendigits", "speech", "har"
+    parser = argparse.ArgumentParser(prog="python -m src.compare")
+    parser.add_argument(
+        "config",
+        help="Config module under src.compare.configs (e.g. har_baseline)",
+    )
+    args = parser.parse_args()
+    cfg = importlib.import_module(f"src.compare.configs.{args.config}")
 
-    DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"  # used by commented AE configs in make_configs
+    PROVIDER = cfg.PROVIDER
+
+    DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
     N_TRIALS = 10
     MAX_TARGET_CLASSES = None  # limit to first N target classes (None = all)
@@ -82,8 +88,8 @@ def main():
     results_dir = ROOT / "results"
     results_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = results_dir / f"sweep_{PROVIDER}_{timestamp}.parquet"
-    latest_path = results_dir / f"sweep_{PROVIDER}_latest.parquet"
+    out_path = results_dir / f"sweep_{args.config}_{timestamp}.parquet"
+    latest_path = results_dir / f"sweep_{args.config}_latest.parquet"
 
     # --- Resume / duplicate policy ---
     # RESUME_FROM:   parquet to continue from (rows are merged into the output).
@@ -226,72 +232,10 @@ def main():
     # NOTE: do not set input_dim in AutoencoderAdapter here — it is
     # injected automatically from the provider's embedding_dim below.
     # =================================================================
-    # train_n = [5, 10, 20, 50, 100, 200, 500]
-    train_n = list(range(5, 50, 5))
+    train_n = cfg.TRAIN_N
 
     def make_configs(embedding_dim: int) -> list:
-        return [
-            # *sweep(AutoencoderAdapter, {
-            #     "train_n": train_n,
-            #     "epochs": [25, 50, 75, 100],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
-            # }),
-            # *sweep(SmallAEAdapter, {
-            #     "train_n": train_n,
-            #     "latent_dim": [4, 8],
-            #     "epochs": [25, 50, 75, 100, 200, 500, 1000],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
-            # }),
-            # *sweep(AutoencoderAdapter, {
-            #     "train_n": train_n,
-            #     "epochs": [10000],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
-            # }),
-            # *sweep(SmallAEAdapter, {
-            #     "train_n": train_n,
-            #     "latent_dim": [8],
-            #     "epochs": [100],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
-            # })
-            *sweep(GMMAdapter, {
-                "train_n": train_n,
-                "n_components": [1, 2, 3],
-                "covariance_type": ["diag", "full", "spherical"],
-            }),
-            *sweep(KNNAdapter, {
-                "train_n": train_n,
-                "k": list(range(1, 6, 1)),
-            }),
-            *sweep(PrototypeAdapter, {
-                "train_n": train_n,
-            }),
-            *sweep(CosineAdapter, {
-                "train_n": train_n,
-            }),
-            *sweep(SmallAEAdapter, {
-                "train_n": train_n,
-                "latent_dim": [4, 8],
-                "epochs": [50, 100],
-                "device": [DEVICE],
-                "input_dim": [embedding_dim],
-            }),
-            # TODO: add ep=500 (or 1000) to find the true convergence floor.
-            # At ep=200 the loss still drops ~18% in the last 20% of training,
-            # so the AE has not fully converged. If ep=500 EER stays above
-            # GMM's ~0.140, the GMM argument holds unconditionally.
-            # *sweep(SmallAEAdapter, {
-            #     "train_n": train_n,
-            #     "latent_dim": [4],
-            #     "epochs": [30],
-            #     "dropout_p": [0.0, 0.2],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
-            # })
-        ]
+        return cfg.make_configs(embedding_dim, DEVICE)
 
     # --- Loop over providers ---
     rows = []
