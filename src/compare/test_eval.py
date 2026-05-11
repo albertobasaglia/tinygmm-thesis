@@ -20,6 +20,7 @@ import pandas as pd
 
 from embeddings.speech import SpeechEmbeddingProvider
 from embeddings.tabular import TabularEmbeddingProvider
+from embeddings.har import HAREmbeddingProvider
 
 from .adapters import (
     GMMAdapter, SmallAEAdapter, CosineAdapter, PrototypeAdapter, KNNAdapter,
@@ -38,7 +39,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    PROVIDER = "pendigits"  # one of: "pendigits", "speech"
+    PROVIDER = "har"  # one of: "pendigits", "speech", "har"
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
     TEST_N = 500
@@ -54,7 +55,7 @@ def main():
     TRAIN_N_VALUES = list(range(5, 100, 10))
 
     if PROVIDER == "speech":
-        ckpt_path = ROOT / "best_16.ckpt"
+        ckpt_path = ROOT / "logs/speech_extractor/version_14/checkpoints/speech_extractor_ch16-32_emb16_dp0.0_seed42.ckpt"
         TEST_WORDS = ["visual", "five", "seven", "no", "off"]
 
         CONFIGS = [
@@ -110,6 +111,45 @@ def main():
             for d in TEST_DIGITS
         ]
 
+    elif PROVIDER == "har":
+        ckpt_path = ROOT / "har_test_8.ckpt"
+        meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
+        held_out = set(int(s) for s in (meta["hyper_parameters"].get("held_out_subjects") or []))
+        embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
+
+        TEST_SUBJECTS = [1610, 1611, 1612, 1613, 1614]
+        missing = [s for s in TEST_SUBJECTS if s not in held_out]
+        if missing:
+            raise ValueError(
+                f"TEST_SUBJECTS {missing} were not in held_out_subjects "
+                f"(={sorted(held_out)}); checkpoint can't be used for final eval."
+            )
+
+        CONFIGS = [
+            ("GMM-final", GMMAdapter, {
+                "n_components": 1,
+                "covariance_type": "diag",
+            }),
+            ("AE-final", SmallAEAdapter, {
+                "latent_dim": 8,
+                "epochs": 100,
+                "device": DEVICE,
+                "input_dim": embedding_dim,
+            }),
+            ("Cosine-final", CosineAdapter, {}),
+            ("Prototype-final", PrototypeAdapter, {}),
+        ]
+
+        providers = [
+            HAREmbeddingProvider(
+                ckpt_path, embedding_dim, ROOT / "data",
+                target_class=s,
+                other_classes=[o for o in TEST_SUBJECTS if o != s],
+                device=DEVICE,
+            )
+            for s in TEST_SUBJECTS
+        ]
+
     else:
         raise ValueError(f"Unknown PROVIDER: {PROVIDER!r}")
 
@@ -140,7 +180,7 @@ def main():
                         "p_trial": trial,
                         "p_embedding_dim": embedding_dim,
                         "p_target_class": provider.target_class,
-                        "p_other_classes": "|".join(sorted(provider.other_classes)),
+                        "p_other_classes": "|".join(sorted(str(c) for c in provider.other_classes)),
                         "p_adapter": cls.__name__,
                         **{f"p_{k}": v for k, v in kwargs.items()},
                     }

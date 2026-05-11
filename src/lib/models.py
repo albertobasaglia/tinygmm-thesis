@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import lightning as L
@@ -61,6 +62,106 @@ class SpeechExtractorModule(L.LightningModule):
     def training_step(self, batch, _):
         loss, acc = self._shared_step(batch)
         self.log_dict({"train_loss": loss, "train_acc": acc}, on_epoch=True, on_step=False, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, _):
+        loss, acc = self._shared_step(batch)
+        self.log_dict({"val_loss": loss, "val_acc": acc}, prog_bar=True)
+
+    def test_step(self, batch, _):
+        loss, acc = self._shared_step(batch)
+        self.log_dict({"test_loss": loss, "test_acc": acc})
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "monitor": "val_loss"}}
+
+
+class HARFeatureExtractor(nn.Module):
+    """
+    1D-CNN trained on (channels, time) sensor windows from WISDM-2019.
+    1D analog of SpeechFeatureExtractor: same conv-block / bottleneck / head shape.
+    """
+    def __init__(self, num_classes: int, embedding_dim: int = 32, in_channels: int = 6,
+                 channels: tuple = (32, 64, 128), dropout_p: float = 0.5):
+        super().__init__()
+        inter_dim = max(embedding_dim * 2, 64)
+
+        layers = []
+        prev = in_channels
+        for i, ch in enumerate(channels):
+            kernel = 5 if i < len(channels) - 1 else 3
+            padding = kernel // 2
+            layers += [nn.Conv1d(prev, ch, kernel, padding=padding),
+                       nn.BatchNorm1d(ch), nn.ReLU()]
+            if i < len(channels) - 1:
+                layers.append(nn.MaxPool1d(2))
+            layers.append(nn.Dropout1d(dropout_p))
+            prev = ch
+        layers += [nn.AdaptiveAvgPool1d(1), nn.Dropout(dropout_p), nn.Flatten()]
+        self.backbone = nn.Sequential(*layers)
+
+        self.embedding_head = nn.Sequential(
+            nn.Linear(channels[-1], inter_dim), nn.ReLU(),
+            nn.Linear(inter_dim, embedding_dim), nn.ReLU(),
+        )
+        self.classifier = nn.Linear(embedding_dim, num_classes)
+
+    def forward(self, x: torch.Tensor, return_embedding: bool = False) -> torch.Tensor:
+        embedding = self.embedding_head(self.backbone(x))
+        return embedding if return_embedding else self.classifier(embedding)
+
+
+class HARExtractorModule(L.LightningModule):
+    """Lightning wrapper for HARFeatureExtractor.
+
+    Per-channel normalization (mean/std) lives in buffers so it travels with the
+    checkpoint; the compare-time provider does not need to know the stats.
+    Call `set_normalization(mean, std)` once after construction (the train script
+    does this with the DataModule's training-set statistics).
+    """
+    def __init__(self, num_classes: int, embedding_dim: int, lr: float,
+                 held_out_subjects: list = None, in_channels: int = 6,
+                 channels: tuple = (32, 64, 128), dropout_p: float = 0.5):
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = HARFeatureExtractor(num_classes, embedding_dim,
+                                         in_channels=in_channels,
+                                         channels=tuple(channels),
+                                         dropout_p=dropout_p)
+        self.criterion = nn.CrossEntropyLoss()
+        self.register_buffer("channel_mean", torch.zeros(in_channels))
+        self.register_buffer("channel_std", torch.ones(in_channels))
+
+    def set_normalization(self, mean: np.ndarray, std: np.ndarray) -> None:
+        mean_t = torch.as_tensor(mean, dtype=torch.float32)
+        std_t = torch.as_tensor(std, dtype=torch.float32)
+        if mean_t.shape != self.channel_mean.shape:
+            raise ValueError(
+                f"mean shape {tuple(mean_t.shape)} != expected {tuple(self.channel_mean.shape)}"
+            )
+        self.channel_mean.copy_(mean_t)
+        self.channel_std.copy_(std_t)
+
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, T)
+        return (x - self.channel_mean.view(1, -1, 1)) / self.channel_std.view(1, -1, 1)
+
+    def forward(self, x: torch.Tensor, return_embedding: bool = False) -> torch.Tensor:
+        return self.model(self._normalize(x), return_embedding)
+
+    def _shared_step(self, batch):
+        x, labels = batch
+        out = self.forward(x)
+        loss = self.criterion(out, labels)
+        acc = (out.argmax(1) == labels).float().mean()
+        return loss, acc
+
+    def training_step(self, batch, _):
+        loss, acc = self._shared_step(batch)
+        self.log_dict({"train_loss": loss, "train_acc": acc},
+                      on_epoch=True, on_step=False, prog_bar=True)
         return loss
 
     def validation_step(self, batch, _):

@@ -428,8 +428,52 @@ def plot_gmm_diag_vs_full(df: pd.DataFrame, y: str = "m_eer"):
 
 
 
+def plot_eer_by_target(df: pd.DataFrame, lines: list[tuple[str, dict]],
+                        train_n: int, target_label: str = "target",
+                        ylabel: str = "EER", y: str = "m_eer"):
+    """Grouped bar chart of EER (or any metric) per target class.
+
+    Generalises the per-word / per-subject breakdown: one bar per target class
+    per config. Useful to spot which targets are systematically harder to enroll.
+
+    Args:
+        df           : results DataFrame
+        lines        : list of (label, filter_dict) pairs (one bar group each)
+        train_n      : enrollment budget to slice on
+        target_label : x-axis label ("word", "subject", ...) — purely cosmetic
+        ylabel       : y-axis label
+        y            : metric column (default "m_eer")
+    """
+    sub = df[df["p_train_n"] == train_n]
+    if sub.empty:
+        print(f"plot_eer_by_target: no rows at train_n={train_n}, skipping.")
+        return
+
+    targets = sorted(sub["p_target_class"].unique())
+    x = np.arange(len(targets))
+    width = 0.8 / max(len(lines), 1)
+
+    fig, ax = plt.subplots(figsize=(max(6, 0.6 * len(targets) + 2), 4))
+    for i, (label, where) in enumerate(lines):
+        s = _filter(sub, where)
+        means = [s.groupby("p_target_class")[y].mean().get(t, float("nan"))
+                 for t in targets]
+        offset = (i - len(lines) / 2 + 0.5) * width
+        ax.bar(x + offset, means, width=width, label=label)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(t) for t in targets], rotation=30, ha="right")
+    ax.set_xlabel(target_label)
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{ylabel} by {target_label} (train_n={train_n})")
+    ax.legend(fontsize=8, ncol=2 if len(lines) > 4 else 1)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+
+
 def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
-                x: str = "m_training_flops", y: str = "m_eer"):
+                x: str = "m_training_flops", y: str = "m_eer",
+                train_n: int | None = None):
     """Scatter plot with Pareto-optimal points highlighted per method.
 
     Shows which methods dominate at different FLOPs budgets. Pareto-optimal
@@ -437,15 +481,18 @@ def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
     with larger markers and connected by lines.
 
     Args:
-        df    : results DataFrame
-        lines : list of (label, filter_dict) pairs
-        x     : column for x-axis (default: m_training_flops)
-        y     : column for y-axis (default: m_eer, lower is better)
+        df      : results DataFrame
+        lines   : list of (label, filter_dict) pairs
+        x       : column for x-axis (default: m_training_flops)
+        y       : column for y-axis (default: m_eer, lower is better)
+        train_n : if set, restrict to rows with p_train_n == train_n
     """
     fig, ax = plt.subplots(figsize=(8, 5))
 
+    base = df if train_n is None else df[df["p_train_n"] == train_n]
+
     for label, where in lines:
-        subset = _filter(df, where)
+        subset = _filter(base, where)
         if subset.empty:
             continue
 
@@ -475,7 +522,10 @@ def plot_pareto(df: pd.DataFrame, lines: list[tuple[str, dict]],
     x_label = x.replace("m_", "").replace("_", " ").title()
     ax.set_xlabel(x_label)
     ax.set_ylabel("EER (lower is better)")
-    ax.set_title(f"Pareto Frontier: EER vs {x_label}")
+    title = f"Pareto Frontier: EER vs {x_label}"
+    if train_n is not None:
+        title += f" (train_n={train_n})"
+    ax.set_title(title)
     ax.legend()
     ax.grid(alpha=0.3, which="both")
     fig.tight_layout()

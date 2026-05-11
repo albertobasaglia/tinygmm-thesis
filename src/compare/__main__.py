@@ -25,6 +25,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from embeddings.base import EmbeddingProvider
 from embeddings.tabular import TabularEmbeddingProvider
 from embeddings.speech import SpeechEmbeddingProvider
+from embeddings.har import HAREmbeddingProvider
 
 from .adapters import (
     AutoencoderAdapter, SmallAEAdapter, GMMAdapter, KNNAdapter,
@@ -65,7 +66,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    PROVIDER = "speech"  # one of: "pendigits", "speech"
+    PROVIDER = "har"  # one of: "pendigits", "speech", "har"
 
     DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"  # used by commented AE configs in make_configs
     TEST_N = 500
@@ -162,13 +163,36 @@ def main():
             for d in target_digits
         ]
 
+    elif PROVIDER == "har":
+        # --- HAR provider: WISDM-2019 watch (accel + gyro) + trained extractor ---
+        TEST_SUBJECTS: set[int] = {1610, 1611, 1612, 1613, 1614}  # reserved for final eval
+        ckpt_path = ROOT / "har_test_8.ckpt"
+        meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
+        held_out: list[int] = [int(s) for s in (meta["hyper_parameters"].get("held_out_subjects") or [])]
+        embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
+        if MAX_TARGET_CLASSES is not None:
+            held_out = held_out[:MAX_TARGET_CLASSES]
+        held_out = [s for s in held_out if s not in TEST_SUBJECTS]
+        log.info("Validation subjects: %s", held_out)
+        log.info("Test subjects (excluded): %s", sorted(TEST_SUBJECTS))
+
+        providers = [
+            HAREmbeddingProvider(ckpt_path, embedding_dim, ROOT / "data",
+                                 target_class=s,
+                                 other_classes=[o for o in held_out if o != s],
+                                 device=DEVICE)
+            for s in held_out
+        ]
+
     elif PROVIDER == "speech":
         # --- Speech provider: Google Speech Commands + trained extractor ---
         TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final eval
         # ckpt_path = ROOT / "logs/speech_extractor/version_3/checkpoints/speech_extractor_emb16_seed42.ckpt"
         # ckpt_path = ROOT / "logs/speech_extractor/version_8/checkpoints/speech_extractor_emb8_seed42.ckpt"
-        ckpt_path = ROOT / "best_16.ckpt"
-        meta = torch.load(ckpt_path, weights_only=True)
+        # ckpt_path = ROOT / "best_16.ckpt"
+        ckpt_path = ROOT / "test_8.ckpt"
+        # ckpt_path = ROOT / "logs/speech_extractor/version_14/checkpoints/speech_extractor_ch16-32_emb16_dp0.0_seed42.ckpt"
+        meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
         held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
         if MAX_TARGET_CLASSES is not None:
             held_out = held_out[:MAX_TARGET_CLASSES]
@@ -177,7 +201,7 @@ def main():
         log.info("Test words (excluded): %s", sorted(TEST_WORDS))
 
         providers = [
-            SpeechEmbeddingProvider(ckpt_path, 16, ROOT / "data",
+            SpeechEmbeddingProvider(ckpt_path, 8, ROOT / "data",
                                     target_class=w,
                                     other_classes=[o for o in held_out if o != w],
                                     device=DEVICE)
@@ -206,7 +230,7 @@ def main():
     # injected automatically from the provider's embedding_dim below.
     # =================================================================
     # train_n = [5, 10, 20, 50, 100, 200, 500]
-    train_n = list(range(5, 20, 1))
+    train_n = list(range(5, 50, 5))
 
     def make_configs(embedding_dim: int) -> list:
         return [
@@ -236,41 +260,42 @@ def main():
             #     "device": [DEVICE],
             #     "input_dim": [embedding_dim],
             # })
-            *sweep(GMMAdapter, {
-                "train_n": train_n,
-                "n_components": [1, 2, 3],
-                "covariance_type": ["diag", "full", "spherical"],
-            }),
-            *sweep(KNNAdapter, {
-                "train_n": train_n,
-                "k": list(range(1, 11, 1)),
-            }),
-            *sweep(PrototypeAdapter, {
-                "train_n": train_n,
-            }),
-            *sweep(CosineAdapter, {
-                "train_n": train_n,
-            }),
-            # *sweep(SmallAEAdapter, {
+            # *sweep(GMMAdapter, {
             #     "train_n": train_n,
-            #     "latent_dim": [4, 8],
-            #     "epochs": [100],
-            #     "device": [DEVICE],
-            #     "input_dim": [embedding_dim],
+            #     "n_components": [1, 2, 3],
+            #     "covariance_type": ["diag", "full", "spherical"],
             # }),
+            # *sweep(KNNAdapter, {
+            #     "train_n": train_n,
+            #     "k": list(range(1, 5, 1)),
+            # }),
+            # *sweep(PrototypeAdapter, {
+            #     "train_n": train_n,
+            # }),
+            # *sweep(CosineAdapter, {
+            #     "train_n": train_n,
+            # }),
+            *sweep(SmallAEAdapter, {
+                "train_n": train_n,
+                "latent_dim": [4, 8],
+                "epochs": [50, 100],
+                "threshold_mode": ["train"],
+                "device": [DEVICE],
+                "input_dim": [embedding_dim],
+            }),
             # TODO: add ep=500 (or 1000) to find the true convergence floor.
             # At ep=200 the loss still drops ~18% in the last 20% of training,
             # so the AE has not fully converged. If ep=500 EER stays above
             # GMM's ~0.140, the GMM argument holds unconditionally.
-            *sweep(SmallAEAdapter, {
-                "train_n": train_n,
-                "latent_dim": [4],
-                "epochs": [30],
-                "threshold_mode": ["val", "train"],
-                "dropout_p": [0.0, 0.2],
-                "device": [DEVICE],
-                "input_dim": [embedding_dim],
-            })
+            # *sweep(SmallAEAdapter, {
+            #     "train_n": train_n,
+            #     "latent_dim": [4],
+            #     "epochs": [30],
+            #     "threshold_mode": ["val", "train"],
+            #     "dropout_p": [0.0, 0.2],
+            #     "device": [DEVICE],
+            #     "input_dim": [embedding_dim],
+            # })
         ]
 
     # --- Loop over providers ---
@@ -316,8 +341,8 @@ def main():
                         p_row = {
                             "p_trial": trial,
                             "p_embedding_dim": embedding_dim,
-                            "p_target_class": provider.target_class,
-                            "p_other_classes": "|".join(sorted(provider.other_classes)),
+                            "p_target_class": str(provider.target_class),
+                            "p_other_classes": "|".join(sorted(str(c) for c in provider.other_classes)),
                             "p_adapter": cls.__name__,
                             **{f"p_{k}": v for k, v in kwargs.items()},
                         }
