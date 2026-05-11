@@ -3,6 +3,7 @@ import pathlib
 import shutil
 import subprocess
 import urllib.request
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -193,15 +194,21 @@ def _download_wisdm(data_dir: str | Path) -> None:
             )
 
     log.info("Unpacking %s", zip_path)
-    if not shutil.which("unzip"):
-        raise RuntimeError(
-            "System `unzip` not found on PATH. Install it (e.g. `brew install unzip`) "
-            "and retry; Python's stdlib zipfile fails on this ZIP64 archive."
+    # Prefer Python's zipfile (reliable ZIP64 support); fall back to system `unzip`
+    # if Python's extractor fails (the archive has historically been finicky).
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(root)
+    except Exception as e:
+        log.warning("Python zipfile failed (%s); falling back to system unzip", e)
+        if not shutil.which("unzip"):
+            raise RuntimeError(
+                f"Python zipfile failed ({e}) and system `unzip` not on PATH."
+            ) from e
+        subprocess.run(
+            ["unzip", "-q", "-o", str(zip_path), "-d", str(root)],
+            check=True,
         )
-    subprocess.run(
-        ["unzip", "-q", "-o", str(zip_path), "-d", str(root)],
-        check=True,
-    )
     if _find_wisdm_watch_dir(root) is None:
         layout = "\n".join(
             f"  {p.relative_to(root)}" for p in sorted(root.rglob("*"))
