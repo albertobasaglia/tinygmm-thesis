@@ -125,7 +125,7 @@ def get_spectrograms(
     n_mels: int = N_MELS,
 ) -> torch.Tensor:
     preprocess = Preprocess(n_mels=n_mels)
-    raw = torchaudio.datasets.SPEECHCOMMANDS(data_dir, download=False, subset=subset)
+    raw = torchaudio.datasets.SPEECHCOMMANDS(data_dir, download=True, subset=subset)
 
     # Filter _walker to only files matching target_class, then truncate to n
     raw._walker = [
@@ -233,6 +233,7 @@ def _align_wisdm(data_dir: str | Path) -> pd.DataFrame:
     if cache.exists():
         return pd.read_parquet(cache)
 
+    _download_wisdm(data_dir)
     root = _wisdm_root(data_dir) / "wisdm-dataset" / "raw" / "watch"
     accel_files = sorted((root / "accel").glob("data_*_accel_watch.txt"))
     gyro_files = sorted((root / "gyro").glob("data_*_gyro_watch.txt"))
