@@ -123,7 +123,9 @@ class HARExtractorModule(L.LightningModule):
     """
     def __init__(self, num_classes: int, embedding_dim: int, lr: float,
                  held_out_subjects: list = None, in_channels: int = 6,
-                 channels: tuple = (32, 64, 128), dropout_p: float = 0.5):
+                 channels: tuple = (32, 64, 128), dropout_p: float = 0.5,
+                 optimizer: str = "adamw", weight_decay: float = 1e-4,
+                 lr_patience: int = 3, lr_factor: float = 0.5, lr_min: float = 1e-6):
         super().__init__()
         self.save_hyperparameters()
         self.model = HARFeatureExtractor(num_classes, embedding_dim,
@@ -173,8 +175,19 @@ class HARExtractorModule(L.LightningModule):
         self.log_dict({"test_loss": loss, "test_acc": acc})
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+        opt_name = self.hparams.optimizer.lower()
+        if opt_name == "adamw":
+            optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr,
+                                          weight_decay=self.hparams.weight_decay)
+        elif opt_name == "adam":
+            optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr,
+                                         weight_decay=self.hparams.weight_decay)
+        else:
+            raise ValueError(f"Unknown optimizer: {self.hparams.optimizer!r}")
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, patience=self.hparams.lr_patience,
+            factor=self.hparams.lr_factor, min_lr=self.hparams.lr_min,
+        )
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "monitor": "val_loss"}}
 
 

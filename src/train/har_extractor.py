@@ -31,6 +31,16 @@ parser.add_argument("--channels",      type=int, nargs="+", default=[32, 64, 128
                     help="Conv backbone channel widths (one entry per block).")
 parser.add_argument("--dropout",       type=float, default=0.5,
                     help="Dropout probability used in conv blocks and head.")
+parser.add_argument("--optimizer",     type=str, default="adamw", choices=["adam", "adamw"],
+                    help="Optimizer (adamw decouples weight decay from the gradient step).")
+parser.add_argument("--weight_decay",  type=float, default=1e-4,
+                    help="L2 / decoupled weight decay (ignored as L2 by adam if 0).")
+parser.add_argument("--lr_patience",   type=int, default=3,
+                    help="ReduceLROnPlateau: epochs with no val_loss improvement before LR cut.")
+parser.add_argument("--lr_factor",     type=float, default=0.5,
+                    help="ReduceLROnPlateau: multiplier applied to LR on plateau.")
+parser.add_argument("--lr_min",        type=float, default=1e-6,
+                    help="ReduceLROnPlateau: floor for the learning rate.")
 
 args = parser.parse_args()
 
@@ -67,7 +77,12 @@ if __name__ == "__main__":
                                 held_out_subjects=args.held_out_subjects or None,
                                 in_channels=WISDM_CHANNELS,
                                 channels=channels,
-                                dropout_p=args.dropout)
+                                dropout_p=args.dropout,
+                                optimizer=args.optimizer,
+                                weight_decay=args.weight_decay,
+                                lr_patience=args.lr_patience,
+                                lr_factor=args.lr_factor,
+                                lr_min=args.lr_min)
     module.set_normalization(dm.channel_mean, dm.channel_std)
     print(f"[*] Channels: {channels} | dropout: {args.dropout}")
     print(f"[*] Per-channel mean: {dm.channel_mean.tolist()}")
