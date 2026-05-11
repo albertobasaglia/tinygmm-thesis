@@ -1,11 +1,5 @@
 import numpy as np
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    roc_curve,
-    precision_score,
-    f1_score,
-)
+from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve
 
 from .adapters import Adapter
 
@@ -13,31 +7,22 @@ from .adapters import Adapter
 def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) -> dict:
     """Evaluate a fitted adapter on held-out test embeddings.
 
-    Args:
-        adapter: A fitted adapter (threshold already calibrated during fit).
-        target_emb: Test embeddings of the target (normal/in-class) speaker.
-            Samples here should be *unseen* during fit. Label 0 internally.
-        other_emb: Test embeddings of non-target (anomaly/out-of-class) speakers.
-            Label 1 internally.
+    Reports only threshold-free metrics: AUC, AUPRC, EER, and accuracy at a
+    fixed 5% FAR operating point read off the test ROC.
 
-    Returns:
-        Dict with ``m_``-prefixed metric keys: recall, precision, f1,
-        false_alarm_rate, accuracy, auc, auprc, eer, threshold.
+    Args:
+        adapter: A fitted adapter.
+        target_emb: Test embeddings of the target (normal/in-class). Label 0.
+        other_emb:  Test embeddings of non-target (anomaly/out-of-class). Label 1.
     """
     scores_target = adapter.score(target_emb)
     scores_other = adapter.score(other_emb)
 
-    preds_target = scores_target > adapter.threshold
-    preds_other = scores_other > adapter.threshold
-
     n_target = len(target_emb)
     n_other = len(other_emb)
-    false_alarms = preds_target.sum()
-    hits = preds_other.sum()
 
     # label 0 = target (normal), 1 = other (anomaly)
     labels = np.concatenate([np.zeros(n_target), np.ones(n_other)])
-    preds = np.concatenate([preds_target, preds_other]).astype(int)
     scores = np.concatenate([scores_target, scores_other])
 
     auc = roc_auc_score(labels, scores)
@@ -58,21 +43,11 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
     acc_at_far = (tpr_at_far * n_other + (1 - fpr_at_far) * n_target) / (n_target + n_other)
     threshold_at_far5 = float(thresholds[far_idx])
 
-    precision = precision_score(labels, preds, zero_division=0)
-    recall = hits / n_other
-    f1 = f1_score(labels, preds, zero_division=0)
-
     return {
-        "m_recall": recall,
-        "m_precision": precision,
-        "m_f1": f1,
-        "m_false_alarm_rate": false_alarms / n_target,
-        "m_accuracy": (hits + n_target - false_alarms) / (n_target + n_other),
         "m_auc": auc,
         "m_auprc": auprc,
         "m_eer": eer,
         "m_acc_at_far5": acc_at_far,
-        "m_threshold": adapter.threshold,
         "m_threshold_eer": threshold_eer,
         "m_threshold_at_far5": threshold_at_far5,
         "m_avg_ll": getattr(adapter, "avg_log_likelihood", None),

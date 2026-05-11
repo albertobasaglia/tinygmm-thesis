@@ -8,10 +8,7 @@ from .sweep import sweep
 from .plots import (
     plot_lines,
     plot_sweep,
-    plot_far_recall,
     plot_eer,
-    plot_precision_recall_bar,
-    plot_f1,
     plot_eer_by_dim,
     plot_eer_train_n_by_dim,
 )

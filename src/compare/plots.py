@@ -43,33 +43,6 @@ def _plot_line(ax, subset: pd.DataFrame, x: str, y: str, label: str, **kwargs):
                          alpha=0.15, color=line.get_color())
 
 
-def plot_far_recall(df: pd.DataFrame, lines: list[tuple[str, dict]]):
-    """Scatter plot of operating points in FAR vs Recall space.
-
-    Each (label, filter_dict) pair becomes one scatter series, with one point
-    per row that matches the filter.  Useful for exposing degenerate configs
-    (FAR≈1, recall≈1) versus well-calibrated ones.
-
-    Args:
-        df    : results DataFrame
-        lines : list of (label, filter_dict) pairs
-    """
-    fig, ax = plt.subplots()
-    for label, where in lines:
-        subset = _filter(df, where)
-        ax.scatter(subset["m_false_alarm_rate"], subset["m_recall"], label=label, s=60)
-
-    ax.set_xlabel("False Alarm Rate (FAR)")
-    ax.set_ylabel("Recall (TPR)")
-    ax.set_title("Operating points: Recall vs FAR")
-    ax.set_xlim(-0.05, 1.05)
-    ax.set_ylim(-0.05, 1.05)
-    ax.axline((0, 0), slope=1, color="grey", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-
-
 def plot_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     """EER vs train_n for selected configs.
 
@@ -91,68 +64,6 @@ def plot_eer(df: pd.DataFrame, lines: list[tuple[str, dict]]):
     ax.grid(alpha=0.3)
     fig.tight_layout()
 
-
-
-def plot_precision_recall_bar(df: pd.DataFrame, train_n: int,
-                               lines: list[tuple[str, dict]]):
-    """Grouped bar chart of precision and recall at a fixed train_n.
-
-    Shows threshold calibration quality: a well-calibrated adapter has both
-    high recall and high precision.  Degenerate configs (recall≈1, precision≈0.5)
-    are immediately visible.
-
-    Args:
-        df      : results DataFrame
-        train_n : the training budget to slice on
-        lines   : list of (label, filter_dict) pairs
-    """
-    labels, precisions, recalls = [], [], []
-    base = df[df["p_train_n"] == train_n]
-    for label, where in lines:
-        subset = _filter(base, where)
-        if subset.empty:
-            continue
-        labels.append(label)
-        precisions.append(subset["m_precision"].mean())
-        recalls.append(subset["m_recall"].mean())
-
-    x = np.arange(len(labels))
-    width = 0.35
-    fig, ax = plt.subplots()
-    ax.bar(x - width / 2, precisions, width, label="Precision")
-    ax.bar(x + width / 2, recalls,    width, label="Recall")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=15, ha="right")
-    ax.set_ylabel("Score")
-    ax.set_ylim(0, 1.05)
-    ax.set_title(f"Precision vs Recall at train_n={train_n}")
-    ax.legend()
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-
-
-def plot_f1(df: pd.DataFrame, lines: list[tuple[str, dict]]):
-    """F1 vs train_n for selected configs.
-
-    F1 penalises degenerate configs (recall=1, precision≈0.5 → F1≈0.66)
-    while rewarding well-calibrated ones, making it a clean single-line
-    comparison when the threshold matters.
-
-    Args:
-        df    : results DataFrame
-        lines : list of (label, filter_dict) pairs
-    """
-    fig, ax = plt.subplots()
-    for label, where in lines:
-        _plot_line(ax, _filter(df, where), "p_train_n", "m_f1", label)
-
-    ax.set_xlabel("train_n")
-    ax.set_ylabel("F1")
-    ax.set_title("F1 vs training budget")
-    ax.set_ylim(0, 1.05)
-    ax.legend()
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
 
 
 def plot_eer_by_dim(df: pd.DataFrame, lines: list[tuple[str, dict]],
@@ -223,7 +134,7 @@ def plot_sweep(df: pd.DataFrame, x: str, y: str, group_by: str = None,
     Args:
         df       : results DataFrame
         x        : column name for the x-axis  (e.g. "p_n_components")
-        y        : column name for the y-axis   (e.g. "m_auc", "m_recall")
+        y        : column name for the y-axis   (e.g. "m_auc", "m_eer")
         group_by : column name for separate lines (e.g. "p_covariance_type")
         filter   : if set, only plot rows where p_adapter == this name
         where    : extra column filters, e.g. {"p_covariance_type": "diag"}

@@ -25,17 +25,25 @@ class Adapter(ABC):
 
     Each adapter receives ALL available embeddings and must use only the
     first self.train_n of them — simulating the on-device budget.
-    The adapter is responsible for any internal train/val split from
-    that budget (e.g. for threshold calibration).
+    The whole budget is used for fitting; the framework reports only
+    threshold-free metrics (AUC / AUPRC / EER / acc_at_far5), so no
+    threshold is computed or stored.
     """
 
     def __init__(self, train_n: int = None):
         self.train_n = train_n
-        self.threshold = None
+
+    @property
+    def threshold(self):
+        raise AttributeError(
+            "Adapter.threshold has been removed: the framework reports only "
+            "threshold-free metrics. Score the data and aggregate over the "
+            "score distribution instead."
+        )
 
     @abstractmethod
     def fit(self, emb: np.ndarray):
-        """Fit on at most self.train_n samples. Sets self.threshold."""
+        """Fit on at most self.train_n samples."""
 
     def _get_budget(self, emb: np.ndarray) -> np.ndarray:
         """Return the on-device budget: first train_n samples."""
@@ -46,9 +54,6 @@ class Adapter(ABC):
     @abstractmethod
     def score(self, emb: np.ndarray) -> np.ndarray:
         """Return per-sample anomaly score (higher = more anomalous)."""
-
-    def predict(self, emb: np.ndarray) -> np.ndarray:
-        return self.score(emb) > self.threshold
 
     @abstractmethod
     def inference_macs(self) -> int:
@@ -71,8 +76,8 @@ class Adapter(ABC):
         """Number of float values that must be stored on-device at inference.
 
         Counts the persistent state required to score a new sample
-        (means, covariances, weights, prototype, stored neighbours,
-        threshold, ...).  Multiply by the dtype size to get bytes.
+        (means, covariances, weights, prototype, stored neighbours, ...).
+        Multiply by the dtype size to get bytes.
         """
 
 
@@ -80,8 +85,8 @@ class AutoencoderAdapter(Adapter):
     N_LOSS_CHECKPOINTS = 5
 
     def __init__(self, input_dim=32, hidden_dim=16, latent_dim=8,
-                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25,
-                 threshold_mode="val", device="cpu", train_n=None):
+                 lr=1e-3, epochs=2000, batch_size=8,
+                 device="cpu", train_n=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -89,21 +94,12 @@ class AutoencoderAdapter(Adapter):
         self.lr = lr
         self.epochs = epochs
         self.batch_size = batch_size
-        self.val_frac = val_frac
-        self.threshold_mode = threshold_mode
         self.device = device
-        self.val_loss_checkpoints: list[float] = []
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         _t0 = time.perf_counter()
-        budget = self._get_budget(emb)
-        if self.threshold_mode == "train":
-            train_emb = budget
-            val_emb = None
-        else:
-            split = max(1, int(len(budget) * (1 - self.val_frac)))
-            train_emb, val_emb = budget[:split], budget[split:]
+        train_emb = self._get_budget(emb)
 
         model = SpeechAutoencoder(self.input_dim, self.hidden_dim, self.latent_dim).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
@@ -112,17 +108,12 @@ class AutoencoderAdapter(Adapter):
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
-        if val_emb is not None:
-            val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
-
-        # Epochs at which to record the validation loss (1-indexed, evenly spaced)
         ckpt_epochs = {
             round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
             for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
         }
 
         _t1 = time.perf_counter()
-        self.val_loss_checkpoints = []
         self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
             model.train()
@@ -136,21 +127,12 @@ class AutoencoderAdapter(Adapter):
                     epoch_loss += loss * len(x)
             if epoch in ckpt_epochs:
                 self.train_loss_checkpoints.append((epoch_loss / len(train_t)).item())
-                if val_emb is not None:
-                    model.eval()
-                    with torch.no_grad():
-                        val_loss = criterion(model(val_t), val_t).item()
-                    self.val_loss_checkpoints.append(val_loss)
 
         model.eval()
         self._model = model
         _t2 = time.perf_counter()
-
-        threshold_scores = self.score(train_emb if val_emb is None else val_emb)
-        self.threshold = float(np.percentile(threshold_scores, 95))
-        _t3 = time.perf_counter()
-        log.debug("AutoencoderAdapter fit: setup=%.3fs  train=%.3fs  threshold=%.3fs  total=%.3fs",
-                  _t1 - _t0, _t2 - _t1, _t3 - _t2, _t3 - _t0)
+        log.debug("AutoencoderAdapter fit: setup=%.3fs  train=%.3fs  total=%.3fs",
+                  _t1 - _t0, _t2 - _t1, _t2 - _t0)
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         x = torch.tensor(emb, dtype=torch.float32, device=self.device)
@@ -166,8 +148,7 @@ class AutoencoderAdapter(Adapter):
 
     def training_macs(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
-        n_train = max(1, int(self.train_n * (1 - frac)))
+        n_train = max(1, self.train_n)
         F = D*H + H*L + L*H + H*D          # forward linear MACs
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
@@ -179,14 +160,13 @@ class AutoencoderAdapter(Adapter):
         linear = 2 * (D*H + H*L + L*H + H*D)
         # Bias additions: one add per output unit per layer
         bias = H + L + H + D
-        # MSE: D subtracts + D squares + (D-1) adds ≈ 3*D
+        # MSE: D subtracts + D squares + (D-1) adds ~ 3*D
         mse = 3 * D
         return linear + bias + mse
 
     def training_flops(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
-        n_train = max(1, int(self.train_n * (1 - frac)))
+        n_train = max(1, self.train_n)
         F = D*H + H*L + L*H + H*D              # forward linear MACs
         B = H + L + H + D                       # bias adds (forward)
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
@@ -207,40 +187,30 @@ class AutoencoderAdapter(Adapter):
     def parameters(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
         # Linear(D,H) + Linear(H,L) + Linear(L,H) + Linear(H,D), all with biases
-        weights = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D
-        return weights + 1  # + threshold
+        return (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D
 
 
 class SmallAEAdapter(Adapter):
-    """Small autoencoder: input_dim → latent_dim (ReLU) → input_dim."""
+    """Small autoencoder: input_dim -> latent_dim (ReLU) -> input_dim."""
 
     N_LOSS_CHECKPOINTS = 5
 
     def __init__(self, input_dim=32, latent_dim=8,
-                 lr=1e-3, epochs=2000, batch_size=8, val_frac=0.25,
-                 threshold_mode="val", dropout_p=0.0, device="cpu", train_n=None):
+                 lr=1e-3, epochs=2000, batch_size=8,
+                 dropout_p=0.0, device="cpu", train_n=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.lr = lr
         self.epochs = epochs
         self.batch_size = batch_size
-        self.val_frac = val_frac
-        self.threshold_mode = threshold_mode
         self.dropout_p = dropout_p
         self.device = device
-        self.val_loss_checkpoints: list[float] = []
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         _t0 = time.perf_counter()
-        budget = self._get_budget(emb)
-        if self.threshold_mode == "train":
-            train_emb = budget
-            val_emb = None
-        else:
-            split = max(1, int(len(budget) * (1 - self.val_frac)))
-            train_emb, val_emb = budget[:split], budget[split:]
+        train_emb = self._get_budget(emb)
 
         model = SmallAutoencoder(self.input_dim, self.latent_dim, self.dropout_p).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
@@ -249,16 +219,12 @@ class SmallAEAdapter(Adapter):
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
         loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
 
-        if val_emb is not None:
-            val_t = torch.tensor(val_emb, dtype=torch.float32, device=self.device)
-
         ckpt_epochs = {
             round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
             for i in range(1, self.N_LOSS_CHECKPOINTS + 1)
         }
 
         _t1 = time.perf_counter()
-        self.val_loss_checkpoints = []
         self.train_loss_checkpoints = []
         for epoch in range(1, self.epochs + 1):
             model.train()
@@ -272,21 +238,12 @@ class SmallAEAdapter(Adapter):
                     epoch_loss += loss * len(x)
             if epoch in ckpt_epochs:
                 self.train_loss_checkpoints.append((epoch_loss / len(train_t)).item())
-                if val_emb is not None:
-                    model.eval()
-                    with torch.no_grad():
-                        val_loss = criterion(model(val_t), val_t).item()
-                    self.val_loss_checkpoints.append(val_loss)
 
         model.eval()
         self._model = model
         _t2 = time.perf_counter()
-
-        threshold_scores = self.score(train_emb if val_emb is None else val_emb)
-        self.threshold = float(np.percentile(threshold_scores, 95))
-        _t3 = time.perf_counter()
-        log.debug("SmallAEAdapter fit: setup=%.3fs  train=%.3fs  threshold=%.3fs  total=%.3fs",
-                  _t1 - _t0, _t2 - _t1, _t3 - _t2, _t3 - _t0)
+        log.debug("SmallAEAdapter fit: setup=%.3fs  train=%.3fs  total=%.3fs",
+                  _t1 - _t0, _t2 - _t1, _t2 - _t0)
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         x = torch.tensor(emb, dtype=torch.float32, device=self.device)
@@ -302,8 +259,7 @@ class SmallAEAdapter(Adapter):
 
     def training_macs(self) -> int:
         D, L = self.input_dim, self.latent_dim
-        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
-        n_train = max(1, int(self.train_n * (1 - frac)))
+        n_train = max(1, self.train_n)
         F = D*L + L*D                      # forward linear MACs
         P = (D+1)*L + (L+1)*D              # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
@@ -315,14 +271,13 @@ class SmallAEAdapter(Adapter):
         linear = 2 * (D*L + L*D)
         # Bias additions: one add per output unit per layer
         bias = L + D
-        # MSE: D subtracts + D squares + (D-1) adds ≈ 3*D
+        # MSE: D subtracts + D squares + (D-1) adds ~ 3*D
         mse = 3 * D
         return linear + bias + mse
 
     def training_flops(self) -> int:
         D, L = self.input_dim, self.latent_dim
-        frac = 0.0 if self.threshold_mode == "train" else self.val_frac
-        n_train = max(1, int(self.train_n * (1 - frac)))
+        n_train = max(1, self.train_n)
         F = D*L + L*D                          # forward linear MACs
         B = L + D                               # bias adds (forward)
         P = (D+1)*L + (L+1)*D                  # parameters (w+b)
@@ -337,23 +292,17 @@ class SmallAEAdapter(Adapter):
     def parameters(self) -> int:
         D, L = self.input_dim, self.latent_dim
         # Linear(D,L) + Linear(L,D), both with biases
-        weights = (D+1)*L + (L+1)*D
-        return weights + 1  # + threshold
+        return (D+1)*L + (L+1)*D
 
 
 class GMMAdapter(Adapter):
-    def __init__(self, n_components=3, covariance_type="full", val_frac=0.25,
-                 threshold_percentile=95, train_n=None):
+    def __init__(self, n_components=3, covariance_type="full", train_n=None):
         super().__init__(train_n)
         self.n_components = n_components
         self.covariance_type = covariance_type
-        self.val_frac = val_frac
-        self.threshold_percentile = threshold_percentile
 
     def fit(self, emb: np.ndarray):
-        budget = self._get_budget(emb)
-        split = max(1, int(len(budget) * (1 - self.val_frac)))
-        train_emb, val_emb = budget[:split], budget[split:]
+        train_emb = self._get_budget(emb)
 
         self._gmm = GaussianMixture(
             n_components=self.n_components,
@@ -363,9 +312,6 @@ class GMMAdapter(Adapter):
         self._gmm.fit(train_emb)
 
         self.avg_log_likelihood = self._gmm.score(train_emb)
-
-        val_scores = self.score(val_emb)
-        self.threshold = float(np.percentile(val_scores, self.threshold_percentile))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Negative log-likelihood: higher = more anomalous
@@ -383,7 +329,7 @@ class GMMAdapter(Adapter):
     def training_macs(self) -> int:
         D = self._gmm.means_.shape[1]
         K = self.n_components
-        n_train = max(1, int(self.train_n * (1 - self.val_frac)))
+        n_train = max(1, self.train_n)
         I = self._gmm.n_iter_
         if self.covariance_type == "spherical":
             per_iter = n_train * K * (2 * D + 2)  # E-step (D+1) + M-step (D+1)
@@ -462,7 +408,7 @@ class GMMAdapter(Adapter):
         else:  # full
             cov = K * D * D
         weights = K
-        return means + cov + weights + 1  # + threshold
+        return means + cov + weights
 
 
 class PrototypeAdapter(Adapter):
@@ -470,23 +416,15 @@ class PrototypeAdapter(Adapter):
 
     The simplest possible non-trivial baseline: collapse the enrolled
     samples to a single point and score by Euclidean distance to it.
-    Threshold is the given percentile of held-out validation distances.
     """
 
-    def __init__(self, threshold_percentile=95, val_frac=0.25, train_n=None):
+    def __init__(self, train_n=None):
         super().__init__(train_n)
-        self.threshold_percentile = threshold_percentile
-        self.val_frac = val_frac
 
     def fit(self, emb: np.ndarray):
-        budget = self._get_budget(emb)
-        split = max(1, int(len(budget) * (1 - self.val_frac)))
-        train_emb, val_emb = budget[:split], budget[split:]
+        train_emb = self._get_budget(emb)
         self._prototype = train_emb.mean(axis=0)
         self._dim = train_emb.shape[1]
-        threshold_emb = val_emb if len(val_emb) > 0 else train_emb
-        val_scores = self.score(threshold_emb)
-        self.threshold = float(np.percentile(val_scores, self.threshold_percentile))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         return np.linalg.norm(emb - self._prototype, axis=1)
@@ -508,33 +446,24 @@ class PrototypeAdapter(Adapter):
         return self.train_n * self._dim + self._dim
 
     def parameters(self) -> int:
-        # prototype (D) + threshold (1)
-        return self._dim + 1
+        return self._dim
 
 
 class CosineAdapter(Adapter):
     """Single prototype: fit = mean of enrollment, score = 1 - cos(z, mean).
 
     Mirrors the TinySV-style prototype matcher used as the comparison
-    point in the related-work / neural-collapse argument.  Threshold is
-    the given percentile of held-out validation scores.
+    point in the related-work / neural-collapse argument.
     """
 
-    def __init__(self, threshold_percentile=95, val_frac=0.25, train_n=None):
+    def __init__(self, train_n=None):
         super().__init__(train_n)
-        self.threshold_percentile = threshold_percentile
-        self.val_frac = val_frac
 
     def fit(self, emb: np.ndarray):
-        budget = self._get_budget(emb)
-        split = max(1, int(len(budget) * (1 - self.val_frac)))
-        train_emb, val_emb = budget[:split], budget[split:]
+        train_emb = self._get_budget(emb)
         self._prototype = train_emb.mean(axis=0)
         self._proto_norm = float(np.linalg.norm(self._prototype))
         self._dim = train_emb.shape[1]
-        threshold_emb = val_emb if len(val_emb) > 0 else train_emb
-        val_scores = self.score(threshold_emb)
-        self.threshold = float(np.percentile(val_scores, self.threshold_percentile))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         dots = emb @ self._prototype
@@ -559,24 +488,18 @@ class CosineAdapter(Adapter):
         return self.train_n * self._dim + self._dim + 2 * self._dim + 1
 
     def parameters(self) -> int:
-        # prototype (D) + cached ||prototype|| (1) + threshold (1)
-        return self._dim + 2
+        # prototype (D) + cached ||prototype|| (1)
+        return self._dim + 1
 
 
 class KNNAdapter(Adapter):
-    def __init__(self, k=5, metric="euclidean", val_frac=0.25, train_n=None):
+    def __init__(self, k=5, metric="euclidean", train_n=None):
         super().__init__(train_n)
         self.k = k
         self.metric = metric
-        self.val_frac = val_frac
 
     def fit(self, emb: np.ndarray):
-        budget = self._get_budget(emb)
-        # split = max(1, int(len(budget) * (1 - self.val_frac)))
-        # TODO threshold not computed as at the moment
-        # it is not needed for out metrics.
-
-        train_emb = budget
+        train_emb = self._get_budget(emb)
 
         if self.k > len(train_emb):
             raise SkipConfig(
@@ -584,10 +507,6 @@ class KNNAdapter(Adapter):
             )
         self._nn = NearestNeighbors(n_neighbors=self.k, metric=self.metric)
         self._nn.fit(train_emb)
-
-        # FIXME
-        val_scores = self.score(train_emb)
-        self.threshold = float(np.percentile(val_scores, 95))
 
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Distance to k-th nearest neighbor (higher = more anomalous)
@@ -610,6 +529,6 @@ class KNNAdapter(Adapter):
         return 0  # KNN just stores the data
 
     def parameters(self) -> int:
-        # All stored training points + threshold
+        # All stored training points
         n_stored, D = self._nn._fit_X.shape
-        return n_stored * D + 1
+        return n_stored * D

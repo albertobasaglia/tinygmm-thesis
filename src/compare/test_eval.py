@@ -93,7 +93,7 @@ def main():
             ("GMM-K1-full",  GMMAdapter, {"n_components": 1, "covariance_type": "full"}),
             ("AE-final",     SmallAEAdapter, {
                 "latent_dim": 4, "epochs": 30,
-                "threshold_mode": "train", "dropout_p": 0.0,
+                "dropout_p": 0.0,
                 "device": DEVICE, "input_dim": embedding_dim,
             }),
             ("Cosine-final",    CosineAdapter, {}),

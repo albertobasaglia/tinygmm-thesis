@@ -25,7 +25,6 @@ from scipy import stats
 from .plots import (
     _filter, _agg, _plot_line,
     plot_eer,
-    plot_far_recall,
     plot_lines,
     plot_gmm_components,
     plot_gmm_diag_vs_full,
@@ -117,26 +116,15 @@ def main():
     fig.tight_layout()
     save("knn_k_selection")
 
-    # A4. AE threshold-mode ablation (pin dropout_p=0.2)
-    threshold_lines = [
-        ("AE threshold=val",   {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                                "p_dropout_p": 0.2, "p_threshold_mode": "val"}),
-        ("AE threshold=train", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                                "p_dropout_p": 0.2, "p_threshold_mode": "train"}),
-    ]
-    plot_eer(df, lines=threshold_lines)
-    plt.title("AE threshold-mode ablation (dropout_p=0.2)")
-    save("ae_threshold_mode_eer")
-
-    # A5. AE dropout ablation (pin threshold_mode=train)
+    # A4. AE dropout ablation
     dropout_lines = [
         ("AE no-dropout",    {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                              "p_dropout_p": 0.0, "p_threshold_mode": "train"}),
+                              "p_dropout_p": 0.0}),
         ("AE dropout_p=0.2", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                              "p_dropout_p": 0.2, "p_threshold_mode": "train"}),
+                              "p_dropout_p": 0.2}),
     ]
     plot_eer(df, lines=dropout_lines)
-    plt.title("AE dropout ablation (threshold_mode=train)")
+    plt.title("AE dropout ablation")
     save("ae_dropout_eer")
 
     # ==================================================================
@@ -344,7 +332,6 @@ def main():
             "m_eer": "EER",
             "m_auc": "AUC",
             "m_auprc": "AUPRC",
-            "m_f1": "F1",
             "m_acc_at_far5": "ACC@FAR=5\\%",
         }
         metrics = [m for m in metric_labels if m in test_slice.columns]
@@ -442,17 +429,7 @@ def main():
         fig.tight_layout()
         save("test_eer_box")
 
-        # G5. FAR vs Recall scatter
-        test_lines = [
-            ("GMM K=1 diag",         {"p_adapter": "GMMAdapter"}),
-            ("SmallAE lat=8 ep=100", {"p_adapter": "SmallAEAdapter"}),
-            ("Cosine",               {"p_adapter": "CosineAdapter"}),
-            ("Prototype",            {"p_adapter": "PrototypeAdapter"}),
-        ]
-        plot_far_recall(test_slice, lines=test_lines)
-        save("test_far_recall")
-
-        # G6. Metrics vs train_n on the test set
+        # G5. Metrics vs train_n on the test set
         def _metric_vs_train_n(metric: str, ylabel: str, fname: str):
             fig, ax = plt.subplots()
             for a, color in zip(adapters, bar_palette):
