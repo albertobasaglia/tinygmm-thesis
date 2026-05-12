@@ -151,6 +151,8 @@ def main():
 
     if PROVIDER == "pendigits":
         # --- Tabular provider: Pendigits (raw features, no feature extractor) ---
+        from src.lib.data import download_pendigits
+
         PENDIGITS_CLASSES = [str(i) for i in range(10)]
         TEST_DIGITS = {"7", "9"}  # reserved for final eval, excluded from sweep
         target_digits = [d for d in PENDIGITS_CLASSES if d not in TEST_DIGITS]
@@ -159,9 +161,11 @@ def main():
         log.info("Target digits: %s", target_digits)
         log.info("Test digits (excluded): %s", sorted(TEST_DIGITS))
 
+        pendigits_path = download_pendigits(ROOT / "data")
+
         providers = [
             TabularEmbeddingProvider(
-                data_path=ROOT / "data" / "pendigits.parquet",
+                data_path=pendigits_path,
                 label_column="class",
                 target_class=d,
                 other_classes=[o for o in target_digits if o != d],

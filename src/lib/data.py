@@ -142,6 +142,39 @@ def get_spectrograms(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Pendigits (UCI Pen-Based Recognition of Handwritten Digits)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _pendigits_parquet(data_dir: str | Path) -> Path:
+    return Path(data_dir) / "pendigits.parquet"
+
+
+def download_pendigits(data_dir: str | Path) -> Path:
+    """Fetch the UCI pendigits dataset via OpenML and cache it as a parquet.
+
+    Layout matches what `TabularEmbeddingProvider` expects: 16 integer feature
+    columns named `input1`..`input16` plus a categorical `class` column with
+    string labels "0".."9".
+    """
+    path = _pendigits_parquet(data_dir)
+    if path.exists():
+        return path
+
+    from sklearn.datasets import fetch_openml
+
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    log.info("Downloading pendigits from OpenML")
+    bunch = fetch_openml("pendigits", version=1, as_frame=True, parser="auto")
+    df = bunch.data.copy()
+    df.columns = [f"input{i + 1}" for i in range(df.shape[1])]
+    df["class"] = bunch.target.astype("category")
+    df.to_parquet(path, index=False)
+    log.info("Saved pendigits to %s (%d rows)", path, len(df))
+    return path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # WISDM-2019 (Human Activity Recognition)
 # ──────────────────────────────────────────────────────────────────────────────
 
