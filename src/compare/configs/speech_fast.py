@@ -9,7 +9,7 @@ from ..sweep import sweep
 
 PROVIDER = "speech"
 CHECKPOINT = "best_16.ckpt"
-TRAIN_N = list(range(5, 200, 5))
+TRAIN_N = list(range(10, 100, 10))
 
 
 def make_configs(embedding_dim: int, device: str) -> list:
@@ -27,8 +27,8 @@ def make_configs(embedding_dim: int, device: str) -> list:
         *sweep(CosineAdapter,    {"train_n": TRAIN_N}),
         *sweep(SmallAEAdapter, {
             "train_n": TRAIN_N,
-            "latent_dim": [4, 8],
-            "epochs": [50, 100],
+            "latent_dim": [4],
+            "epochs": [50],
             "device": [device],
             "input_dim": [embedding_dim],
         }),

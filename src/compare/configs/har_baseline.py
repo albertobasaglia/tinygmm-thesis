@@ -8,7 +8,8 @@ from ..adapters import (
 from ..sweep import sweep
 
 PROVIDER = "har"
-TRAIN_N = list(range(5, 50, 5))
+CHECKPOINT = "har_test_8.ckpt"
+TRAIN_N = list(range(5, 200, 5))
 
 
 def make_configs(embedding_dim: int, device: str) -> list:

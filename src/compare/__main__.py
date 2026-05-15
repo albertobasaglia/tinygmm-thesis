@@ -81,6 +81,9 @@ def main():
 
     ROOT = Path(__file__).parent.parent.parent   # repo root
 
+    ckpt_name = getattr(cfg, "CHECKPOINT", None)
+    ckpt_path = ROOT / ckpt_name if ckpt_name else None
+
     # --- Output paths ---
     # Each run writes to a timestamped parquet (never overwritten).
     # `latest_path` is a symlink that always points to the most recent run
@@ -176,7 +179,8 @@ def main():
     elif PROVIDER == "har":
         # --- HAR provider: WISDM-2019 watch (accel + gyro) + trained extractor ---
         TEST_SUBJECTS: set[int] = {1610, 1611, 1612, 1613, 1614}  # reserved for final eval
-        ckpt_path = ROOT / "har_test_8.ckpt"
+        if ckpt_path is None:
+            raise ValueError(f"Config {args.config!r} (PROVIDER='har') must set CHECKPOINT")
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
         held_out: list[int] = [int(s) for s in (meta["hyper_parameters"].get("held_out_subjects") or [])]
         embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
@@ -197,7 +201,8 @@ def main():
     elif PROVIDER == "speech":
         # --- Speech provider: Google Speech Commands + trained extractor ---
         TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final eval
-        ckpt_path = ROOT / "best_16.ckpt"
+        if ckpt_path is None:
+            raise ValueError(f"Config {args.config!r} (PROVIDER='speech') must set CHECKPOINT")
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
         held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
         embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
