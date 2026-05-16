@@ -62,7 +62,7 @@ if __name__ == "__main__":
     print(f"[*] Parameters: {sum(p.numel() for p in module.parameters()):,}")
 
     ch_str = "-".join(map(str, channels))
-    ckpt_name = f"speech_extractor_ch{ch_str}_emb{args.embedding_dim}_dp{args.dropout}_seed{args.seed}"
+    ckpt_name = f"speech_extractor_ch{ch_str}_emb{args.embedding_dim}_dp{args.dropout}_seed{args.seed}-{{epoch:02d}}-{{val_loss:.4f}}"
     logger = CSVLogger("logs", name="speech_extractor")
 
     trainer = L.Trainer(
@@ -70,7 +70,7 @@ if __name__ == "__main__":
         accelerator="auto",
         callbacks=[
             EarlyStopping(monitor="val_loss", patience=args.patience, verbose=True),
-            ModelCheckpoint(monitor="val_loss", filename=ckpt_name, save_top_k=1, mode="min", save_last=True),
+            ModelCheckpoint(monitor="val_loss", filename=ckpt_name, save_top_k=3, mode="min", save_last=True),
         ],
         deterministic=True,
         logger=logger
