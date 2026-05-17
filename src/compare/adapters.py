@@ -86,7 +86,7 @@ class AutoencoderAdapter(Adapter):
 
     def __init__(self, input_dim=32, hidden_dim=16, latent_dim=8,
                  lr=1e-3, epochs=2000, batch_size=8,
-                 device="cpu", train_n=None):
+                 device="cpu", train_n=None, seed=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -95,18 +95,23 @@ class AutoencoderAdapter(Adapter):
         self.epochs = epochs
         self.batch_size = batch_size
         self.device = device
+        self.seed = seed
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         _t0 = time.perf_counter()
         train_emb = self._get_budget(emb)
 
+        if self.seed is not None:
+            torch.manual_seed(self.seed)
         model = SpeechAutoencoder(self.input_dim, self.hidden_dim, self.latent_dim).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
-        loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
+        loader_gen = torch.Generator().manual_seed(self.seed) if self.seed is not None else None
+        loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size,
+                            shuffle=True, generator=loader_gen)
 
         ckpt_epochs = {
             round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
@@ -197,7 +202,7 @@ class SmallAEAdapter(Adapter):
 
     def __init__(self, input_dim=32, latent_dim=8,
                  lr=1e-3, epochs=2000, batch_size=8,
-                 dropout_p=0.0, device="cpu", train_n=None):
+                 dropout_p=0.0, device="cpu", train_n=None, seed=None):
         super().__init__(train_n)
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -206,18 +211,23 @@ class SmallAEAdapter(Adapter):
         self.batch_size = batch_size
         self.dropout_p = dropout_p
         self.device = device
+        self.seed = seed
         self.train_loss_checkpoints: list[float] = []
 
     def fit(self, emb: np.ndarray):
         _t0 = time.perf_counter()
         train_emb = self._get_budget(emb)
 
+        if self.seed is not None:
+            torch.manual_seed(self.seed)
         model = SmallAutoencoder(self.input_dim, self.latent_dim, self.dropout_p).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr, weight_decay=1e-4)
         criterion = nn.MSELoss()
 
         train_t = torch.tensor(train_emb, dtype=torch.float32, device=self.device)
-        loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size, shuffle=True)
+        loader_gen = torch.Generator().manual_seed(self.seed) if self.seed is not None else None
+        loader = DataLoader(TensorDataset(train_t), batch_size=self.batch_size,
+                            shuffle=True, generator=loader_gen)
 
         ckpt_epochs = {
             round(i * self.epochs / self.N_LOSS_CHECKPOINTS)
@@ -296,10 +306,11 @@ class SmallAEAdapter(Adapter):
 
 
 class GMMAdapter(Adapter):
-    def __init__(self, n_components=3, covariance_type="full", train_n=None):
+    def __init__(self, n_components=3, covariance_type="full", train_n=None, seed=None):
         super().__init__(train_n)
         self.n_components = n_components
         self.covariance_type = covariance_type
+        self.seed = seed
 
     def fit(self, emb: np.ndarray):
         train_emb = self._get_budget(emb)
@@ -308,6 +319,7 @@ class GMMAdapter(Adapter):
             n_components=self.n_components,
             covariance_type=self.covariance_type,
             reg_covar=1e-4,
+            random_state=self.seed,
         )
         self._gmm.fit(train_emb)
 

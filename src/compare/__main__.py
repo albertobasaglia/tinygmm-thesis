@@ -11,6 +11,7 @@ Results are saved as a Parquet file in results/.
 import argparse
 import cProfile
 import importlib
+import inspect
 import io
 import logging
 import pstats
@@ -305,7 +306,10 @@ def main():
 
                         log.debug("Running config '%s'", name)
                         config_t0 = time.perf_counter()
-                        adapter = cls(**kwargs)
+                        adapter_kwargs = dict(kwargs)
+                        if "seed" in inspect.signature(cls.__init__).parameters:
+                            adapter_kwargs["seed"] = trial
+                        adapter = cls(**adapter_kwargs)
                         try:
                             adapter.fit(shuffled_emb)
                         except SkipConfig as e:

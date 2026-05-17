@@ -58,6 +58,7 @@ PROTOTYPE_BEST = {"p_adapter": "PrototypeAdapter"}
 
 BEST_LINES = [
     ("GMM K=1 diag", GMM_BEST),
+    ("GMM K=1 full", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "full"}),
     ("kNN k=5",      KNN_BEST),
     ("SmallAE",      AE_BEST),
     ("Cosine",       COSINE_BEST),
@@ -123,28 +124,34 @@ def section_hyperparam(df: pd.DataFrame, out_dir: Path):
     print("  saved gmm_cov_ci_eer.pdf")
 
     knn_sub = _filter(df, {"p_adapter": "KNNAdapter"})
-    knn_sub = knn_sub[knn_sub["p_train_n"] == FIXED_TRAIN_N]
-    fig, ax = plt.subplots()
-    agg = knn_sub.groupby("p_k")["m_eer"].agg(["mean", "std"]).reset_index().sort_values("p_k")
-    ax.bar(agg["p_k"], agg["mean"], yerr=agg["std"], capsize=3)
-    ax.set_xlabel("k")
-    ax.set_ylabel("EER")
-    ax.set_title(f"kNN: EER vs k (train_n={FIXED_TRAIN_N})")
-    ax.set_xticks(agg["p_k"].astype(int))
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-    _save(out_dir, "knn_k_selection")
+    knn_sub = knn_sub[knn_sub["p_train_n"] == FIXED_TRAIN_N] if "p_k" in knn_sub.columns else knn_sub.iloc[0:0]
+    if knn_sub.empty:
+        print("  skipped knn_k_selection (no KNN rows)")
+    else:
+        fig, ax = plt.subplots()
+        agg = knn_sub.groupby("p_k")["m_eer"].agg(["mean", "std"]).reset_index().sort_values("p_k")
+        ax.bar(agg["p_k"], agg["mean"], yerr=agg["std"], capsize=3)
+        ax.set_xlabel("k")
+        ax.set_ylabel("EER")
+        ax.set_title(f"kNN: EER vs k (train_n={FIXED_TRAIN_N})")
+        ax.set_xticks(agg["p_k"].astype(int))
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        _save(out_dir, "knn_k_selection")
 
-    dropout_lines = [
-        ("AE no-dropout",    {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                              "p_dropout_p": 0.0}),
-        ("AE dropout_p=0.2", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                              "p_dropout_p": 0.2}),
-    ]
-    plot_lines(df, x="p_train_n", y="m_eer", lines=dropout_lines,
-               out_path=out_dir / "ae_dropout_eer.pdf",
-               title="AE dropout ablation")
-    print("  saved ae_dropout_eer.pdf")
+    if "p_dropout_p" not in df.columns:
+        print("  skipped ae_dropout_eer (no AE dropout rows)")
+    else:
+        dropout_lines = [
+            ("AE no-dropout",    {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                                  "p_dropout_p": 0.0}),
+            ("AE dropout_p=0.2", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
+                                  "p_dropout_p": 0.2}),
+        ]
+        plot_lines(df, x="p_train_n", y="m_eer", lines=dropout_lines,
+                   out_path=out_dir / "ae_dropout_eer.pdf",
+                   title="AE dropout ablation")
+        print("  saved ae_dropout_eer.pdf")
 
 
 def section_compare(df: pd.DataFrame, out_dir: Path):

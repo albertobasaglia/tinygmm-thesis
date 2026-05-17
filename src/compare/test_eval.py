@@ -10,6 +10,7 @@ results/test_<provider>.parquet, separate from the validation sweep.
 Switch PROVIDER below to toggle between speech and pendigits.
 """
 
+import inspect
 import logging
 import time
 from pathlib import Path
@@ -198,7 +199,10 @@ def main():
 
                     log.info("Running config '%s' trial %d train_n=%d target=%s",
                              name, trial, train_n, provider.target_class)
-                    adapter = cls(**kwargs)
+                    adapter_kwargs = dict(kwargs)
+                    if "seed" in inspect.signature(cls.__init__).parameters:
+                        adapter_kwargs["seed"] = trial
+                    adapter = cls(**adapter_kwargs)
                     try:
                         adapter.fit(shuffled_emb)
                     except SkipConfig as e:
