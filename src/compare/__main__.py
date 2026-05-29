@@ -36,6 +36,11 @@ from .metrics import evaluate
 log = logging.getLogger(__name__)
 
 
+def read_classes(path: Path) -> list[str]:
+    """Read class identifiers (one per line) from a class-list file."""
+    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+
 def _upsert(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
     """Merge new_df into existing_df; new rows overwrite existing rows
     sharing the same p_-prefixed parameter columns.
@@ -81,6 +86,7 @@ def main():
     MAX_TARGET_CLASSES = None  # limit to first N target classes (None = all)
 
     ROOT = Path(__file__).parent.parent.parent   # repo root
+    CLASSES_DIR = Path(__file__).parent / "classes"
 
     ckpt_name = getattr(cfg, "CHECKPOINT", None)
     ckpt_path = ROOT / ckpt_name if ckpt_name else None
@@ -158,7 +164,7 @@ def main():
         from src.lib.data import download_pendigits
 
         PENDIGITS_CLASSES = [str(i) for i in range(10)]
-        TEST_DIGITS = {"7", "9"}  # reserved for final eval, excluded from sweep
+        TEST_DIGITS = set(read_classes(CLASSES_DIR / "pendigits" / "test.txt"))
         target_digits = [d for d in PENDIGITS_CLASSES if d not in TEST_DIGITS]
         if MAX_TARGET_CLASSES is not None:
             target_digits = target_digits[:MAX_TARGET_CLASSES]
@@ -179,7 +185,7 @@ def main():
 
     elif PROVIDER == "har":
         # --- HAR provider: WISDM-2019 watch (accel + gyro) + trained extractor ---
-        TEST_SUBJECTS: set[int] = {1610, 1611, 1612, 1613, 1614}  # reserved for final eval
+        TEST_SUBJECTS: set[int] = {int(s) for s in read_classes(CLASSES_DIR / "har" / "test.txt")}
         if ckpt_path is None:
             raise ValueError(f"Config {args.config!r} (PROVIDER='har') must set CHECKPOINT")
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
@@ -201,7 +207,7 @@ def main():
 
     elif PROVIDER == "speech":
         # --- Speech provider: Google Speech Commands + trained extractor ---
-        TEST_WORDS = {"visual", "five", "seven", "no", "off"}  # reserved for final eval
+        TEST_WORDS = set(read_classes(CLASSES_DIR / "speech" / "test.txt"))
         if ckpt_path is None:
             raise ValueError(f"Config {args.config!r} (PROVIDER='speech') must set CHECKPOINT")
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")

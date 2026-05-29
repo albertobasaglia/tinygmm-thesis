@@ -96,7 +96,7 @@ def main():
         ]
 
     elif PROVIDER == "pendigits":
-        TEST_DIGITS = ["7", "9"]
+        TEST_DIGITS = ["2", "4", "6", "7", "8"]
 
         CONFIGS = [
             # Smallest GMM that ties best AUC on validation:
