@@ -8,7 +8,7 @@ from ..adapters import (
 from ..sweep import sweep
 
 PROVIDER = "pendigits"
-TRAIN_N = list(range(5, 50, 5))
+TRAIN_N = list(range(5, 200, 5))
 
 
 def make_configs(embedding_dim: int, device: str) -> list:
