@@ -48,8 +48,15 @@ class Adapter(ABC):
     def _get_budget(self, emb: np.ndarray) -> np.ndarray:
         """Return the on-device budget: first train_n samples."""
         if self.train_n is not None:
-            return emb[:self.train_n]
-        return emb
+            budget = emb[:self.train_n]
+        else:
+            budget = emb
+        self._n_train = len(budget)
+        return budget
+
+    def _fitted_train_n(self) -> int:
+        """Number of samples used by fit(), for post-fit cost accounting."""
+        return max(1, getattr(self, "_n_train", self.train_n or 0))
 
     @abstractmethod
     def score(self, emb: np.ndarray) -> np.ndarray:
@@ -153,7 +160,7 @@ class AutoencoderAdapter(Adapter):
 
     def training_macs(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        n_train = max(1, self.train_n)
+        n_train = self._fitted_train_n()
         F = D*H + H*L + L*H + H*D          # forward linear MACs
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
@@ -171,7 +178,7 @@ class AutoencoderAdapter(Adapter):
 
     def training_flops(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        n_train = max(1, self.train_n)
+        n_train = self._fitted_train_n()
         F = D*H + H*L + L*H + H*D              # forward linear MACs
         B = H + L + H + D                       # bias adds (forward)
         P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
@@ -269,7 +276,7 @@ class SmallAEAdapter(Adapter):
 
     def training_macs(self) -> int:
         D, L = self.input_dim, self.latent_dim
-        n_train = max(1, self.train_n)
+        n_train = self._fitted_train_n()
         F = D*L + L*D                      # forward linear MACs
         P = (D+1)*L + (L+1)*D              # parameters (w+b)
         per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
@@ -287,7 +294,7 @@ class SmallAEAdapter(Adapter):
 
     def training_flops(self) -> int:
         D, L = self.input_dim, self.latent_dim
-        n_train = max(1, self.train_n)
+        n_train = self._fitted_train_n()
         F = D*L + L*D                          # forward linear MACs
         B = L + D                               # bias adds (forward)
         P = (D+1)*L + (L+1)*D                  # parameters (w+b)
@@ -341,7 +348,7 @@ class GMMAdapter(Adapter):
     def training_macs(self) -> int:
         D = self._gmm.means_.shape[1]
         K = self.n_components
-        n_train = max(1, self.train_n)
+        n_train = self._fitted_train_n()
         I = self._gmm.n_iter_
         if self.covariance_type == "spherical":
             per_iter = n_train * K * (2 * D + 2)  # E-step (D+1) + M-step (D+1)
@@ -385,7 +392,7 @@ class GMMAdapter(Adapter):
             #   D^2   add   mat-vec accumulation
             #   D     mul   dot product with (x - mu_k)
             #   D-1   add   dot product sum
-            kernel = K * (2 * D**2 + 3 * D)
+            kernel = K * (2 * D**2 + 2 * D)
 
         # 2. Per-component weighting: log_prob_k = log(pi_k) - 0.5 * maha_k^2
         #   1   mul   0.5 * maha^2
@@ -404,8 +411,29 @@ class GMMAdapter(Adapter):
         return kernel + per_comp + logsumexp
 
     def training_flops(self) -> int:
-        # EM algorithm is multiply-accumulate dominated: 2 FLOPs per MAC
-        return 2 * self.training_macs()
+        """Estimated FLOPs for the fitted EM iterations.
+
+        This accounts for repeated GMM scoring, responsibility normalization,
+        and M-step parameter updates. It intentionally does not try to model
+        sklearn's k-means initialization or low-level linear algebra constants.
+        """
+        D = self._gmm.means_.shape[1]
+        K = self.n_components
+        N = self._fitted_train_n()
+        I = self._gmm.n_iter_
+
+        e_step = N * (self.inference_flops() + K)  # +K for log-responsibility subtracts
+        weights = N * K + K                        # nk sums + weight normalization
+        means = K * D * (2 * N + 1)                # weighted sums + divide by nk
+
+        if self.covariance_type == "spherical":
+            cov = K * D * (4 * N + 1) + K          # diagonal variance accumulation, average over D
+        elif self.covariance_type == "diag":
+            cov = K * D * (4 * N + 1)              # diagonal variance accumulation
+        else:
+            cov = K * (N * D + 3 * N * D**2 + D**2 + D**3)
+
+        return I * (e_step + weights + means + cov)
 
     def parameters(self) -> int:
         D = self._gmm.means_.shape[1]
@@ -447,15 +475,15 @@ class PrototypeAdapter(Adapter):
 
     def training_macs(self) -> int:
         # Sum of train_n D-vectors
-        return self.train_n * self._dim
+        return self._fitted_train_n() * self._dim
 
     def inference_flops(self) -> int:
         # D sub + D mul + (D-1) add + 1 sqrt
         return 3 * self._dim
 
     def training_flops(self) -> int:
-        # Sum: N*D adds, then D divisions for the mean
-        return self.train_n * self._dim + self._dim
+        # Mean: (N-1)*D adds + D divisions = N*D
+        return self._fitted_train_n() * self._dim
 
     def parameters(self) -> int:
         return self._dim
@@ -489,15 +517,15 @@ class CosineAdapter(Adapter):
 
     def training_macs(self) -> int:
         # Sum of train_n D-vectors + ||prototype||^2
-        return self.train_n * self._dim + self._dim
+        return self._fitted_train_n() * self._dim + self._dim
 
     def inference_flops(self) -> int:
         # dot: 2D-1; norm-squared: 2D-1; sqrt: 1; norms*proto_norm: 1; div: 1; 1 - cos: 1
         return 4 * self._dim + 3
 
     def training_flops(self) -> int:
-        # Mean: N*D adds + D divs;  prototype norm: 2D MACs + 1 sqrt
-        return self.train_n * self._dim + self._dim + 2 * self._dim + 1
+        # Mean: N*D; prototype norm: D mul + (D-1) add + 1 sqrt = 2D
+        return self._fitted_train_n() * self._dim + 2 * self._dim
 
     def parameters(self) -> int:
         # prototype (D) + cached ||prototype|| (1)
@@ -534,8 +562,15 @@ class KNNAdapter(Adapter):
         return 0  # KNN just stores the data
 
     def inference_flops(self) -> int:
-        # Euclidean distance: 2 FLOPs per MAC (multiply + accumulate)
-        return 2 * self.inference_macs()
+        if self.metric != "euclidean":
+            raise NotImplementedError(
+                "KNNAdapter FLOP accounting is implemented only for euclidean distance"
+            )
+        D = self._nn._fit_X.shape[1]
+        n_stored = self._nn._fit_X.shape[0]
+        # Distance-work estimate: D sub + D mul + (D-1) add + 1 sqrt = 3D.
+        # Exact sklearn cost can differ if algorithm="auto" selects a tree.
+        return n_stored * 3 * D
 
     def training_flops(self) -> int:
         return 0  # KNN just stores the data
