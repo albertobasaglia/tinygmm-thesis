@@ -84,7 +84,6 @@ class Adapter(ABC):
 
         Counts the persistent state required to score a new sample
         (means, covariances, weights, prototype, stored neighbours, ...).
-        Multiply by the dtype size to get bytes.
         """
 
 
@@ -443,10 +442,8 @@ class GMMAdapter(Adapter):
             cov = K
         elif self.covariance_type == "diag":
             cov = K * D
-        elif self.covariance_type == "tied":
-            cov = D * D
         else:  # full
-            cov = K * D * D
+            cov = K * D * (D + 1) // 2
         weights = K
         return means + cov + weights
 

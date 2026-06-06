@@ -57,7 +57,6 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_inference_flops": adapter.inference_flops(),
         "m_training_flops": adapter.training_flops(),
         "m_parameters": adapter.parameters(),
-        "m_memory_bytes_f32": 4 * adapter.parameters(),
         **{
             f"m_val_loss_{i+1}": v
             for i, v in enumerate(getattr(adapter, "val_loss_checkpoints", []))

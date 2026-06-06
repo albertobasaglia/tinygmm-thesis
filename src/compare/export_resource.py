@@ -1,7 +1,7 @@
 """
 Export the dataset-independent resource artifacts.
 
-Per-adapter inference FLOPs, stored parameters, and persistent memory are
+Per-adapter inference FLOPs and stored-parameter counts are
 deterministic structural counts: they depend only on the adapter and the
 embedding dimension D, not on the dataset or on any sweep result. All three
 thesis datasets (speech, HAR, Pendigits) share D=16 and the same selected
@@ -72,20 +72,20 @@ def _adapter_specs(D: int):
     ]
 
 
-def _costs(D: int, n: int) -> dict[str, tuple[int, int, int]]:
-    """Structural (inference FLOPs, parameters, bytes at f32) per adapter at
+def _costs(D: int, n: int) -> dict[str, tuple[int, int]]:
+    """Structural (inference FLOPs, stored parameters) per adapter at
     enrollment size n. The adapters are fit on synthetic data only to populate
     the shapes their cost models read; the counts do not depend on the data."""
     rng = np.random.default_rng(0)
     X = rng.standard_normal((n, D)).astype(np.float32)
-    out: dict[str, tuple[int, int, int]] = {}
+    out: dict[str, tuple[int, int]] = {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # ill-conditioned cov / convergence at tiny n
         for label, factory in _adapter_specs(D):
             adapter = factory(n)
             adapter.fit(X)
             params = adapter.parameters()
-            out[label] = (adapter.inference_flops(), params, params * 4)
+            out[label] = (adapter.inference_flops(), params)
     return out
 
 
@@ -94,21 +94,21 @@ def write_table(D: int, train_n: int, tables_dir: Path):
     costs = _costs(D, train_n)
     rows = []
     for label, _ in _adapter_specs(D):
-        flops, params, mbytes = costs[label]
-        rows.append(f"    {label} & {flops:.0f} & {params:.0f} & {mbytes:.0f} \\\\")
+        flops, params = costs[label]
+        rows.append(f"    {label} & {flops:.0f} & {params:.0f} \\\\")
     tex = "\n".join([
         "\\begin{table}[htbp]",
         "  \\centering",
         f"  \\caption{{Resource cost per adaptive layer at \\texttt{{train\\_n}}={train_n}:"
-        " per-sample inference FLOPs, stored parameters, and persistent memory at"
-        " single precision. These are deterministic structural counts that depend"
+        " per-sample inference FLOPs and stored parameters. These are"
+        " deterministic structural counts that depend"
         f" only on the adaptive layer and the embedding dimension ($D={D}$, shared by all"
         " three datasets), not on the dataset, so a single table applies"
         " throughout and no confidence interval is reported.}",
         "  \\label{tab:resource}",
-        "  \\begin{tabular}{lrrr}",
+        "  \\begin{tabular}{lrr}",
         "    \\toprule",
-        "    Adaptive layer & Inference FLOPs & Parameters & Memory (bytes) \\\\",
+        "    Adaptive layer & Inference FLOPs & Parameters \\\\",
         "    \\midrule",
         "\n".join(rows),
         "    \\bottomrule",
@@ -189,12 +189,12 @@ def main():
     print(f"Writing table to {args.tables}\n")
 
     costs = _costs(args.dim, args.train_n)
-    fmt = "  {:<14} {:>10} {:>10} {:>12}"
-    print(fmt.format("Adapter", "InfFLOPs", "Params", "Bytes"))
-    print(fmt.format("-------", "--------", "------", "-----"))
+    fmt = "  {:<14} {:>10} {:>12}"
+    print(fmt.format("Adapter", "InfFLOPs", "Params"))
+    print(fmt.format("-------", "--------", "-----"))
     for label, _ in _adapter_specs(args.dim):
-        f, p, b = costs[label]
-        print(fmt.format(label, f, p, b))
+        f, params = costs[label]
+        print(fmt.format(label, f, params))
     print()
 
     write_table(args.dim, args.train_n, args.tables)
