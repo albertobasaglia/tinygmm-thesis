@@ -24,6 +24,7 @@ Plot structure (matches the results chapter):
 
 import argparse
 import os
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,13 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy import stats
 
+from .adapters import (
+    CosineAdapter,
+    GMMAdapter,
+    KNNAdapter,
+    PrototypeAdapter,
+    SmallAEAdapter,
+)
 from .plots import _filter, plot_lines, plot_gmm_grid, plot_ci_bars
 
 ROOT = Path(__file__).parent.parent.parent
@@ -127,6 +135,77 @@ def _dataset_name(parquet: Path) -> str:
         parts.pop()
     name = "_".join(parts)
     return name.removesuffix("_baseline")
+
+
+def _refresh_structural_costs(df: pd.DataFrame) -> pd.DataFrame:
+    """Overwrite m_inference_flops and m_parameters with values recomputed
+    from the current cost models in adapters.py.
+
+    The sweep bakes these structural counts into the parquet at sweep time,
+    so a later cost-model fix would silently leave the Pareto plots on the
+    old formulas. Recomputing at export time keeps every exported artifact
+    on the same accounting as export_resource and export_bench, which
+    already compute live. As there, a synthetic fit only populates the
+    shapes the cost models read; the counts do not depend on the data.
+    """
+    rng = np.random.default_rng(0)
+    cache: dict[tuple, tuple[int, int] | None] = {}
+
+    def val(row, col):
+        v = row.get(col)
+        return None if v is None or pd.isna(v) else v
+
+    def costs(row):
+        key = (row["p_adapter"], val(row, "p_embedding_dim"),
+               val(row, "p_n_components"), val(row, "p_covariance_type"),
+               val(row, "p_k"), val(row, "p_train_n"), val(row, "p_latent_dim"))
+        if key in cache:
+            return cache[key]
+        name, D, K, cov, k, n, L = key
+        D = int(D)
+        a = None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # ill-conditioned cov / convergence
+            if name == "GMMAdapter":
+                a = GMMAdapter(n_components=int(K), covariance_type=cov,
+                               train_n=50, seed=0)
+                a.fit(rng.standard_normal((50, D)).astype(np.float32))
+            elif name == "KNNAdapter":
+                a = KNNAdapter(k=int(k), train_n=int(n))
+                a.fit(rng.standard_normal((int(n), D)).astype(np.float32))
+            elif name == "SmallAEAdapter":
+                # The AE cost model reads only constructor fields; no fit needed.
+                a = SmallAEAdapter(input_dim=D, latent_dim=int(L))
+            elif name == "CosineAdapter":
+                a = CosineAdapter()
+                a.fit(rng.standard_normal((4, D)).astype(np.float32))
+            elif name == "PrototypeAdapter":
+                a = PrototypeAdapter()
+                a.fit(rng.standard_normal((4, D)).astype(np.float32))
+        cache[key] = (a.inference_flops(), a.parameters()) if a is not None else None
+        return cache[key]
+
+    fresh = df.apply(costs, axis=1)
+    known = fresh.notna()
+    unknown = sorted(df.loc[~known, "p_adapter"].unique())
+    if unknown:
+        warnings.warn(f"no cost model for {unknown}; keeping baked values for those rows")
+    df = df.copy()
+    new_flops = fresh[known].map(lambda c: c[0])
+    new_params = fresh[known].map(lambda c: c[1])
+    stale_flops = int((df.loc[known, "m_inference_flops"] != new_flops).sum())
+    stale_params = int((df.loc[known, "m_parameters"] != new_params).sum())
+    df.loc[known, "m_inference_flops"] = new_flops
+    df.loc[known, "m_parameters"] = new_params
+    if stale_flops or stale_params:
+        warnings.warn(
+            "parquet was baked with outdated cost models: refreshed "
+            f"{stale_flops} m_inference_flops and {stale_params} m_parameters "
+            "values; the exported figures use the current formulas"
+        )
+    else:
+        print("Structural costs verified against current cost models (parquet already current)")
+    return df
 
 
 def _ci95(vals: pd.Series) -> tuple[float, float]:
@@ -540,6 +619,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_parquet(args.parquet)
+    df = _refresh_structural_costs(df)
     print(f"Loaded {len(df)} rows from {args.parquet}")
     print(f"Writing PDFs to {out_dir}")
     print(f"Writing tables to {tables_dir}\n")
