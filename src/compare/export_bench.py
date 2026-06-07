@@ -1,0 +1,234 @@
+"""
+Export the measured-vs-estimated inference cost artifacts.
+
+Parses the on-device benchmark log produced by firmware/bench (ESP32-S3,
+microseconds per inference, min over trials) and pairs every measured
+configuration with the analytical inference-FLOP count from the adapter cost
+models in adapters.py. This is the hardware validation of the resource
+accounting: the sweeps and all reported resource numbers use the analytical
+counts; the benchmark exists to show that those counts track what the silicon
+actually does.
+
+Usage:
+    python -m src.compare.export_bench
+    python -m src.compare.export_bench --bench firmware/bench/output.txt \\
+        --out tinygmm-tex/figures/resource --tables tinygmm-tex/tables
+
+Writes:
+    <out>/bench_us_vs_flops.pdf      (label: fig:bench_us_vs_flops)
+    <tables>/bench.tex               (label: tab:bench)
+"""
+
+import argparse
+import re
+import warnings
+from pathlib import Path
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from .adapters import GMMAdapter, KNNAdapter, SmallAEAdapter
+
+ROOT = Path(__file__).parent.parent.parent
+
+FULL_W = 5.12
+H = 3.4
+
+plt.rcParams.update({
+    "figure.figsize": (FULL_W, H),
+    "font.size": 10,
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "legend.fontsize": 8,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "figure.dpi": 150,
+    "savefig.dpi": 300,
+})
+
+# One benchmark line, e.g.:
+#   result small_ae D=16 L=4   us/inf= 1.38  cyc/inf= 54.3  sink=0.183032
+#   result gmm D=16 K=1 cov=diag ...
+#   result knn D=16 N=10 k=5 ...
+_LINE = re.compile(
+    r"result\s+(?P<name>\w+)\s+D=(?P<D>\d+)"
+    r"(?:\s+L=(?P<L>\d+))?"
+    r"(?:\s+K=(?P<K>\d+)\s+cov=(?P<cov>\w+))?"
+    r"(?:\s+N=(?P<N>\d+)\s+k=(?P<k>\d+))?"
+    r"\s+us/inf=\s*(?P<us>[\d.]+)"
+)
+
+
+def _inference_flops(cfg: dict) -> int:
+    """Analytical per-sample inference FLOPs for one benchmarked config,
+    taken from the same adapter cost models that produce every reported
+    resource number. The synthetic fit only populates the shapes the cost
+    model reads; the count does not depend on the data."""
+    D = cfg["D"]
+    rng = np.random.default_rng(0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if cfg["name"] == "gmm":
+            a = GMMAdapter(n_components=cfg["K"], covariance_type=cfg["cov"],
+                           train_n=50, seed=0)
+            a.fit(rng.standard_normal((50, D)).astype(np.float32))
+        elif cfg["name"] == "knn":
+            a = KNNAdapter(k=cfg["k"], train_n=cfg["N"])
+            a.fit(rng.standard_normal((cfg["N"], D)).astype(np.float32))
+        elif cfg["name"] == "small_ae":
+            a = SmallAEAdapter(input_dim=D, latent_dim=cfg["L"], epochs=1,
+                               train_n=20, seed=0)
+            a.fit(rng.standard_normal((20, D)).astype(np.float32))
+        else:
+            raise ValueError(f"unknown benchmark adapter {cfg['name']!r}")
+    return a.inference_flops()
+
+
+def parse_bench(path: Path) -> list[dict]:
+    rows = []
+    for line in path.read_text().splitlines():
+        m = _LINE.search(line)
+        if m is None:
+            continue
+        g = m.groupdict()
+        cfg = {
+            "name": g["name"],
+            "D": int(g["D"]),
+            "L": int(g["L"]) if g["L"] else None,
+            "K": int(g["K"]) if g["K"] else None,
+            "cov": g["cov"],
+            "N": int(g["N"]) if g["N"] else None,
+            "k": int(g["k"]) if g["k"] else None,
+            "us": float(g["us"]),
+        }
+        cfg["flops"] = _inference_flops(cfg)
+        rows.append(cfg)
+    if not rows:
+        raise SystemExit(f"no benchmark lines found in {path}")
+    return rows
+
+
+def _family(cfg: dict) -> str:
+    if cfg["name"] == "gmm":
+        return f"GMM {cfg['cov']}"
+    if cfg["name"] == "knn":
+        return f"kNN k={cfg['k']}"
+    return "SmallAE"
+
+
+def _label(cfg: dict) -> str:
+    if cfg["name"] == "gmm":
+        return f"GMM K={cfg['K']} {cfg['cov']}"
+    if cfg["name"] == "knn":
+        return f"kNN N={cfg['N']} k={cfg['k']}"
+    return f"SmallAE L={cfg['L']}"
+
+
+def fig_us_vs_flops(rows: list[dict], out_dir: Path):
+    families: dict[str, list[dict]] = {}
+    for r in rows:
+        families.setdefault(_family(r), []).append(r)
+
+    fig, ax = plt.subplots()
+    markers = {16: "o", 32: "s"}
+    for fam, frows in families.items():
+        frows = sorted(frows, key=lambda r: r["flops"])
+        color = None
+        for D in (16, 32):
+            drows = [r for r in frows if r["D"] == D]
+            if not drows:
+                continue
+            line, = ax.plot(
+                [r["flops"] for r in drows], [r["us"] for r in drows],
+                marker=markers[D], linestyle="--", linewidth=0.8,
+                color=color, markerfacecolor="none" if D == 32 else None,
+                label=fam if D == 16 else None,
+            )
+            color = line.get_color()
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("Analytical inference FLOPs")
+    ax.set_ylabel("Measured time per inference [µs]")
+    ax.set_title("Measured on-device cost vs structural FLOP count")
+    ax.grid(alpha=0.3, which="both")
+    leg = ax.legend(title="filled: D=16, hollow: D=32")
+    leg.get_title().set_fontsize(8)
+    fig.tight_layout()
+    path = out_dir / "bench_us_vs_flops.pdf"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved {path}")
+
+
+def write_table(rows: list[dict], tables_dir: Path):
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    body = []
+    last_fam = None
+    for r in sorted(rows, key=lambda r: (_family(r), r["D"], r["flops"])):
+        fam = _family(r)
+        if last_fam is not None and fam != last_fam:
+            body.append("    \\midrule")
+        last_fam = fam
+        ns_per_flop = 1e3 * r["us"] / r["flops"]
+        body.append(
+            f"    {_label(r)} & {r['D']} & {r['flops']} & "
+            f"{r['us']:.2f} & {ns_per_flop:.1f} \\\\"
+        )
+    tex = "\n".join([
+        "\\begin{table}[htbp]",
+        "  \\centering",
+        "  \\caption{Measured per-inference time on the ESP32-S3 benchmark"
+        " against the analytical inference-FLOP count of each configuration."
+        " The last column is the implied time per counted FLOP; it is stable"
+        " within each computational pattern and varies across patterns because"
+        " transcendental operations are charged as one FLOP each.}",
+        "  \\label{tab:bench}",
+        "  \\begin{tabular}{lrrrr}",
+        "    \\toprule",
+        "    Configuration & $D$ & FLOPs & Measured [µs] & ns/FLOP \\\\",
+        "    \\midrule",
+        "\n".join(body),
+        "    \\bottomrule",
+        "  \\end{tabular}",
+        "\\end{table}",
+    ])
+    path = tables_dir / "bench.tex"
+    path.write_text(tex + "\n")
+    print(f"  saved {path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="python -m src.compare.export_bench")
+    parser.add_argument("--bench", type=Path,
+                        default=ROOT / "firmware" / "bench" / "output.txt",
+                        help="Benchmark log from firmware/bench.")
+    parser.add_argument("--out", type=Path,
+                        default=ROOT / "tinygmm-tex" / "figures" / "resource",
+                        help="Directory for the comparison figure.")
+    parser.add_argument("--tables", type=Path,
+                        default=ROOT / "tinygmm-tex" / "tables",
+                        help="Directory for bench.tex.")
+    args = parser.parse_args()
+
+    rows = parse_bench(args.bench)
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    fmt = "  {:<22} {:>4} {:>7} {:>9} {:>9}"
+    print(fmt.format("Config", "D", "FLOPs", "us/inf", "ns/FLOP"))
+    print(fmt.format("------", "-", "-----", "------", "-------"))
+    for r in sorted(rows, key=lambda r: (_family(r), r["D"], r["flops"])):
+        print(fmt.format(_label(r), r["D"], r["flops"], f"{r['us']:.2f}",
+                         f"{1e3 * r['us'] / r['flops']:.1f}"))
+
+    logf = np.log([r["flops"] for r in rows])
+    logu = np.log([r["us"] for r in rows])
+    r_log = float(np.corrcoef(logf, logu)[0, 1])
+    slope = float(np.polyfit(logf, logu, 1)[0])
+    print(f"\n  log-log Pearson r = {r_log:.3f}, power-law slope = {slope:.2f}")
+
+    fig_us_vs_flops(rows, args.out)
+    write_table(rows, args.tables)
+
+
+if __name__ == "__main__":
+    main()

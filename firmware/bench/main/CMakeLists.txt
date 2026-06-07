@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS "main.c" "small_ae.c" "gmm.c" "knn.c"
     INCLUDE_DIRS "."
+    PRIV_REQUIRES esp_hw_support esp_timer
 )
 
 # Keep the hot loops simple and loop-unroll-friendly.

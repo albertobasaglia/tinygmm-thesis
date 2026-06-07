@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_cpu.h"
+#include "esp_private/esp_clk.h"
 
 #include "config.h"
 #include "small_ae.h"
@@ -88,6 +89,100 @@ static void bench(const char *tag, void *ctx, score_fn fn, const float *query, i
     }
 }
 
+/* ---- One-shot clock diagnostics (see CALIBRATION.md, steps 1-3) ----
+   Answers, in one boot: what frequency the core actually runs at, which of
+   the two counters (CCOUNT / esp_timer) is honest, and whether the measured
+   per-MAC throughput of the benchmark is physically possible. All loops load
+   their operands through volatile per iteration so -ffast-math cannot
+   constant-fold or final-value-replace them. */
+static void clock_diagnostics(void)
+{
+    /* Step 1: what does the clock tree claim? */
+    printf("diag: cpu=%d MHz xtal=%d MHz apb=%d Hz\n",
+           esp_clk_cpu_freq() / 1000000,
+           esp_clk_xtal_freq() / 1000000,
+           esp_clk_apb_freq());
+    fflush(stdout);
+
+    /* Step 2a: CCOUNT rate vs host wall clock. Watch the spacing of these
+       lines with `idf.py monitor --timestamps`:
+         ~6.25 s apart -> CCOUNT at 160 MHz
+         ~25 s   apart -> CCOUNT at 40 MHz (XTAL)
+         ~4.17 s apart -> CCOUNT at 240 MHz
+       vTaskDelay keeps the watchdogs fed; CCOUNT keeps counting while idle
+       because PM/tickless idle are disabled. */
+    printf("diag: ccount ticks, 1e9 cycles each...\n");
+    fflush(stdout);
+    for (int i = 0; i < 3; i++) {
+        uint32_t c0 = esp_cpu_get_cycle_count();
+        while (esp_cpu_get_cycle_count() - c0 < 1000000000u)
+            vTaskDelay(1);
+        printf("diag: ccount tick %d\n", i + 1);
+        fflush(stdout);
+    }
+
+    /* Step 2b: esp_timer vs host wall clock. These lines must be 5.0 s
+       apart on the host; any other spacing means esp_timer is misscaled. */
+    for (int i = 0; i < 2; i++) {
+        int64_t t0 = esp_timer_get_time();
+        while (esp_timer_get_time() - t0 < 5000000)
+            vTaskDelay(1);
+        printf("diag: esp_timer tick %d, 5 s nominal\n", i + 1);
+        fflush(stdout);
+    }
+
+    /* Step 3a: dependent FP-add chain. Each iteration is a volatile load
+       plus an add that depends on the previous one, so it cannot retire
+       faster than 1 cycle/iter on any single-issue core; realistically
+       ~4-5 cyc/iter given FP add latency. If either counter implies
+       < 1 cyc/iter, that counter (or the build) is broken. */
+    {
+        volatile float one = 1.0f;
+        float a = 0.0f;
+        int64_t  t0 = esp_timer_get_time();
+        uint32_t c0 = esp_cpu_get_cycle_count();
+        for (int i = 0; i < 10000000; i++)
+            a = a + one;
+        uint32_t c1 = esp_cpu_get_cycle_count();
+        int64_t  t1 = esp_timer_get_time();
+        sink = a;
+        printf("diag: dep-add 1e7 iters: cyc=%lu us=%lld cyc/iter=%.3f implied_mhz=%.1f\n",
+               (unsigned long)(c1 - c0), (long long)(t1 - t0),
+               (double)(c1 - c0) / 1e7,
+               (double)(c1 - c0) / (double)(t1 - t0));
+        fflush(stdout);
+    }
+
+    /* Step 3b: independent-MAC throughput ceiling. x evolves each iteration
+       (dependent add) so nothing folds; the 4 accumulators are independent
+       and pipeline freely. Per iteration: 1 load + 1 add + 4 MACs. The
+       implied cyc/MAC here is the best this core+compiler can do; compare it
+       with what the bench results imply (e.g. GMM full K=3 D=32 implied
+       0.17 cyc/MAC from output.txt -- impossible if this ceiling is ~1). */
+    {
+        volatile float dv = 1e-7f, yv = 0.999999f;
+        float d = dv, y = yv, x = 1.0f;
+        float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+        int64_t  t0 = esp_timer_get_time();
+        uint32_t c0 = esp_cpu_get_cycle_count();
+        for (int i = 0; i < 10000000; i++) {
+            x += d;
+            s0 += x * y; s1 += x * y; s2 += x * y; s3 += x * y;
+        }
+        uint32_t c1 = esp_cpu_get_cycle_count();
+        int64_t  t1 = esp_timer_get_time();
+        sink = s0 + s1 + s2 + s3;
+        printf("diag: indep-madd 4e7 MACs: cyc=%lu us=%lld cyc/mac=%.3f implied_mhz=%.1f\n",
+               (unsigned long)(c1 - c0), (long long)(t1 - t0),
+               (double)(c1 - c0) / 4e7,
+               (double)(c1 - c0) / (double)(t1 - t0));
+        fflush(stdout);
+    }
+
+    printf("diag: done\n");
+    fflush(stdout);
+}
+
 /* -- Typed wrappers so we can pass a uniform score_fn. -- */
 static float wrap_ae(void *ctx, const float *x)  { return small_ae_score(ctx, x); }
 static float wrap_gmm(void *ctx, const float *x) { return gmm_score(ctx, x); }
@@ -118,6 +213,8 @@ void app_main(void)
 {
     printf("== adapter inference benchmark (reps=%d warmup=%d trials=%d, min reported) ==\n",
            BENCH_REPS, BENCH_WARMUP, BENCH_TRIALS);
+
+    clock_diagnostics();
 
     float query[64];
 
