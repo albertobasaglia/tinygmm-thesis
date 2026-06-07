@@ -282,12 +282,12 @@ def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
         agg = subset.groupby("m_inference_flops")[y].mean().reset_index()
         xs, ys = agg["m_inference_flops"].values, agg[y].values
         color = ax._get_lines.get_next_color()
-        ax.scatter(xs, ys, alpha=0.4, s=20, color=color)
+        ax.scatter(xs, ys, alpha=0.4, s=10, color=color)
         pareto = _pareto_mask(xs, ys, lower_y_better=lower_y_better)
         if pareto.any():
             px, py = xs[pareto], ys[pareto]
             order = np.argsort(px)
-            ax.scatter(px, py, s=80, color=color, label=label, zorder=3)
+            ax.scatter(px, py, s=35, color=color, label=label, zorder=3)
             ax.plot(px[order], py[order], color=color, linewidth=1.5, alpha=0.7, zorder=2)
     ax.set_xscale("log")
     ax.set_xlabel("Inference FLOPs")

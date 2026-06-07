@@ -19,7 +19,7 @@ def _agg(df: pd.DataFrame, x: str, y: str) -> pd.DataFrame:
 
 def _plot_line(ax, subset: pd.DataFrame, x: str, y: str, label: str, **kwargs):
     agg = _agg(subset, x, y)
-    line, = ax.plot(agg[x], agg["mean"], marker="o", label=label, **kwargs)
+    line, = ax.plot(agg[x], agg["mean"], label=label, **kwargs)
     if agg["std"].notna().any():
         sem = agg["std"] / np.sqrt(agg["count"])
         t_crit = stats.t.ppf(0.975, df=agg["count"] - 1)
