@@ -75,6 +75,14 @@ def main():
         "config",
         help="Config module under src.compare.configs (e.g. har_baseline)",
     )
+    parser.add_argument(
+        "--split",
+        choices=["val", "test"],
+        default="val",
+        help="Class-split group to personalize on. 'val' (default): validation "
+             "classes + full config grid (the main sweep). 'test': held-out "
+             "test classes + frozen best-of-each config list (the final test).",
+    )
     args = parser.parse_args()
     cfg = importlib.import_module(f"src.compare.configs.{args.config}")
 
@@ -98,8 +106,15 @@ def main():
     results_dir = ROOT / "results"
     results_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = results_dir / f"sweep_{args.config}_{timestamp}.parquet"
-    latest_path = results_dir / f"sweep_{args.config}_latest.parquet"
+    if args.split == "test":
+        # Final-test run: a single stable file per dataset, matching the name the
+        # exporter's section_final_test reads via --test-parquet (test_<dataset>).
+        dataset = args.config.removesuffix("_baseline")
+        out_path = results_dir / f"test_{dataset}.parquet"
+        latest_path = out_path
+    else:
+        out_path = results_dir / f"sweep_{args.config}_{timestamp}.parquet"
+        latest_path = results_dir / f"sweep_{args.config}_latest.parquet"
 
     # --- Resume / duplicate policy ---
     # RESUME_FROM:   parquet to continue from (rows are merged into the output).
@@ -108,7 +123,12 @@ def main():
     #                in RESUME_FROM:
     #                  "skip"    — don't recompute, keep the existing row
     #                  "replace" — recompute and overwrite the existing row
-    RESUME_FROM: Path | None = latest_path if latest_path.exists() else None
+    # The final-test parquet (test_<dataset>) is regenerated from scratch each
+    # run so a stale prior file cannot mask rows; the main sweep resumes as before.
+    RESUME_FROM: Path | None = (
+        None if args.split == "test"
+        else (latest_path if latest_path.exists() else None)
+    )
     ON_DUPLICATE: str = "skip"
 
     if ON_DUPLICATE not in ("skip", "replace"):
@@ -164,12 +184,15 @@ def main():
         from src.lib.data import download_pendigits
 
         PENDIGITS_CLASSES = [str(i) for i in range(10)]
-        TEST_DIGITS = set(read_classes(CLASSES_DIR / "pendigits" / "test.txt"))
-        target_digits = [d for d in PENDIGITS_CLASSES if d not in TEST_DIGITS]
+        TEST_DIGITS = read_classes(CLASSES_DIR / "pendigits" / "test.txt")
+        if args.split == "test":
+            target_digits = list(TEST_DIGITS)
+        else:
+            target_digits = [d for d in PENDIGITS_CLASSES if d not in set(TEST_DIGITS)]
         if MAX_TARGET_CLASSES is not None:
             target_digits = target_digits[:MAX_TARGET_CLASSES]
-        log.info("Target digits: %s", target_digits)
-        log.info("Test digits (excluded): %s", sorted(TEST_DIGITS))
+        log.info("Split=%s | target digits: %s", args.split, target_digits)
+        log.info("Test digits: %s", sorted(set(TEST_DIGITS)))
 
         pendigits_path = download_pendigits(ROOT / "data")
 
@@ -191,18 +214,21 @@ def main():
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
         held_out: list[int] = [int(s) for s in (meta["hyper_parameters"].get("held_out_subjects") or [])]
         embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
+        if args.split == "test":
+            targets = sorted(TEST_SUBJECTS)
+        else:
+            targets = [s for s in held_out if s not in TEST_SUBJECTS]
         if MAX_TARGET_CLASSES is not None:
-            held_out = held_out[:MAX_TARGET_CLASSES]
-        held_out = [s for s in held_out if s not in TEST_SUBJECTS]
-        log.info("Validation subjects: %s", held_out)
-        log.info("Test subjects (excluded): %s", sorted(TEST_SUBJECTS))
+            targets = targets[:MAX_TARGET_CLASSES]
+        log.info("Split=%s | target subjects: %s", args.split, targets)
+        log.info("Test subjects: %s", sorted(TEST_SUBJECTS))
 
         providers = [
             HAREmbeddingProvider(ckpt_path, embedding_dim, ROOT / "data",
                                  target_class=s,
-                                 other_classes=[o for o in held_out if o != s],
+                                 other_classes=[o for o in targets if o != s],
                                  device=DEVICE)
-            for s in held_out
+            for s in targets
         ]
 
     elif PROVIDER == "speech":
@@ -213,18 +239,21 @@ def main():
         meta = torch.load(ckpt_path, weights_only=True, map_location="cpu")
         held_out = list(meta["hyper_parameters"].get("held_out_words") or [])
         embedding_dim = int(meta["hyper_parameters"]["embedding_dim"])
+        if args.split == "test":
+            targets = sorted(TEST_WORDS)
+        else:
+            targets = [w for w in held_out if w not in TEST_WORDS]
         if MAX_TARGET_CLASSES is not None:
-            held_out = held_out[:MAX_TARGET_CLASSES]
-        held_out = [w for w in held_out if w not in TEST_WORDS]
-        log.info("Validation words: %s", held_out)
-        log.info("Test words (excluded): %s", sorted(TEST_WORDS))
+            targets = targets[:MAX_TARGET_CLASSES]
+        log.info("Split=%s | target words: %s", args.split, targets)
+        log.info("Test words: %s", sorted(TEST_WORDS))
 
         providers = [
             SpeechEmbeddingProvider(ckpt_path, embedding_dim, ROOT / "data",
                                     target_class=w,
-                                    other_classes=[o for o in held_out if o != w],
+                                    other_classes=[o for o in targets if o != w],
                                     device=DEVICE)
-            for w in held_out
+            for w in targets
         ]
 
     else:
@@ -250,8 +279,12 @@ def main():
     # =================================================================
     train_n = cfg.TRAIN_N
 
+    # 'val' uses the full grid (main sweep); 'test' uses the frozen
+    # best-of-each shortlist shared with export_plots.BEST_LINES.
+    _cfg_fn = cfg.make_test_configs if args.split == "test" else cfg.make_configs
+
     def make_configs(embedding_dim: int) -> list:
-        return cfg.make_configs(embedding_dim, DEVICE)
+        return _cfg_fn(embedding_dim, DEVICE)
 
     # --- Loop over providers ---
     rows = []
@@ -358,10 +391,13 @@ def main():
     df.to_parquet(out_path, index=False)
     log.info("Saved %d rows to %s", len(df), out_path)
 
-    if latest_path.is_symlink() or latest_path.exists():
-        latest_path.unlink()
-    latest_path.symlink_to(out_path.name)
-    log.info("Updated symlink %s -> %s", latest_path, out_path.name)
+    # The main sweep keeps a `_latest` symlink; the final-test run writes a single
+    # stable file (latest_path == out_path) and needs no symlink.
+    if latest_path != out_path:
+        if latest_path.is_symlink() or latest_path.exists():
+            latest_path.unlink()
+        latest_path.symlink_to(out_path.name)
+        log.info("Updated symlink %s -> %s", latest_path, out_path.name)
 
     return df
 

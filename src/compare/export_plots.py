@@ -39,6 +39,7 @@ from .adapters import (
     PrototypeAdapter,
     SmallAEAdapter,
 )
+from .configs.frozen import best_lines
 from .plots import _filter, plot_lines, plot_gmm_grid, plot_ci_bars
 
 ROOT = Path(__file__).parent.parent.parent
@@ -59,20 +60,9 @@ plt.rcParams.update({
 })
 
 
-GMM_BEST       = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
-KNN_BEST       = {"p_adapter": "KNNAdapter", "p_k": 5}
-AE_BEST        = {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}
-COSINE_BEST    = {"p_adapter": "CosineAdapter"}
-PROTOTYPE_BEST = {"p_adapter": "PrototypeAdapter"}
-
-BEST_LINES = [
-    ("GMM K=1 diag", GMM_BEST),
-    ("GMM K=1 full", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "full"}),
-    ("kNN k=5",      KNN_BEST),
-    ("SmallAE",      AE_BEST),
-    ("Cosine",       COSINE_BEST),
-    ("Prototype",    PROTOTYPE_BEST),
-]
+# Single source of truth: the frozen best-of-each set lives in configs/frozen.py
+# and is shared with the final-test sweep (make_test_configs) so they cannot drift.
+BEST_LINES = best_lines()
 
 GMM_COV_LINES = [
     ("K=1 diag", {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}),
@@ -460,49 +450,65 @@ def _table_gmm_ablation(sub: pd.DataFrame, tables_dir: Path, dataset: str):
     print(f"  saved {path}")
 
 
-def section_final_test(test_parquet_path: Path | None, out_dir: Path, tables_dir: Path):
-    """Generate test_summary.tex and 2 figures from the held-out test parquet."""
+def section_final_test(test_parquet_path: Path | None, out_dir: Path,
+                       tables_dir: Path, dataset: str):
+    """Per-dataset final-test artifacts from the held-out test parquet.
+
+    Emits a per-dataset summary table (`test_summary_<dataset>.tex`) and two
+    figures (`test_<dataset>_acc_at_far5_ci`, `test_<dataset>_acc_at_far5_vs_train_n`)
+    at the same enrollment budget (train_n=FIXED_TRAIN_N) used by the rest of the
+    exporter. The headline metric is ACC@FAR=5% (higher is better); EER and AUPRC
+    are reported in the table as supporting columns.
+
+    Rows are the frozen best-of-each families (BEST_LINES), so the two GMM K=1
+    variants (full vs diag) stay distinct rather than collapsing on p_adapter.
+    """
     if test_parquet_path is None:
         print("E. Final test skipped (no --test-parquet)")
         return
     if not test_parquet_path.exists():
         print(f"E. Final test skipped ({test_parquet_path} not found)")
         return
-    print("E. Final test")
+    print(f"E. Final test ({dataset})")
     test_df = pd.read_parquet(test_parquet_path)
 
-    TEST_TRAIN_N = 95
-    slice_at = test_df[test_df["p_train_n"] == TEST_TRAIN_N]
+    slice_at = test_df[test_df["p_train_n"] == FIXED_TRAIN_N]
+    if slice_at.empty:
+        print(f"  skipped: no rows at train_n={FIXED_TRAIN_N}")
+        return
 
-    adapter_labels = {
-        "GMMAdapter":       "GMM K=1 diag",
-        "CosineAdapter":    "Cosine",
-        "KNNAdapter":       "kNN k=5",
-        "PrototypeAdapter": "Prototype",
-        "SmallAEAdapter":   "SmallAE lat=8 ep=100",
-    }
-    order = (slice_at.groupby("p_adapter")["m_eer"].mean()
-             .sort_values().index.tolist())
-    adapters = [a for a in order if a in adapter_labels]
+    # Each frozen family becomes one row/bar; sort by headline ACC@FAR=5% (desc).
+    families = []  # (label, where, slice)
+    for label, where in BEST_LINES:
+        s = _filter(slice_at, where)
+        if s.empty:
+            continue
+        families.append((label, where, s))
+    families.sort(key=lambda t: t[2]["m_acc_at_far5"].mean(), reverse=True)
+    if not families:
+        print("  skipped: no frozen families present in test parquet")
+        return
 
     tables_dir.mkdir(parents=True, exist_ok=True)
-    metric_labels = {"m_eer": "EER", "m_auprc": "AUPRC", "m_acc_at_far5": "ACC@FAR=5\\%"}
+    n_targets = slice_at["p_target_class"].nunique()
+    n_trials = slice_at["p_trial"].nunique()
+
+    # --- Summary table (headline ACC@FAR=5% first, then EER, AUPRC) ---
+    metric_labels = {"m_acc_at_far5": "ACC@FAR=5\\%", "m_eer": "EER", "m_auprc": "AUPRC"}
     metrics = list(metric_labels)
-    agg = slice_at.groupby("p_adapter")[metrics].agg(["mean", "std"])
     rows = []
-    for a in adapters:
-        cells = " & ".join(
-            f"{agg.loc[a, (m, 'mean')]:.3f} $\\pm$ {agg.loc[a, (m, 'std')]:.3f}"
-            for m in metrics
-        )
-        rows.append(f"    {adapter_labels[a]} & {cells} \\\\")
+    for label, where, s in families:
+        cells = " & ".join(_cell(s[m]) for m in metrics)
+        rows.append(f"    {label} & {cells} \\\\")
     tex = "\n".join([
         "\\begin{table}[htbp]",
         "  \\centering",
-        "  \\caption{Final-test metrics on the 5 held-out test words"
-        f" at \\texttt{{train\\_n}}={TEST_TRAIN_N}"
-        " (mean $\\pm$ std across 5 words $\\times$ 10 trials).}",
-        "  \\label{tab:test_summary}",
+        f"  \\caption{{Final-test metrics on the held-out {dataset} test classes"
+        f" at \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI across"
+        f" {n_targets} test classes $\\times$ {n_trials} trials). ACC@FAR=5\\% is"
+        " the headline metric (higher is better); EER and AUPRC are shown for"
+        " reference.}",
+        f"  \\label{{tab:test_summary_{dataset}}}",
         "  \\resizebox{\\textwidth}{!}{%",
         f"  \\begin{{tabular}}{{l{'r' * len(metrics)}}}",
         "    \\toprule",
@@ -514,59 +520,65 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path, tables_dir
         "  }",
         "\\end{table}",
     ])
-    (tables_dir / "test_summary.tex").write_text(tex + "\n")
-    print(f"  saved {tables_dir / 'test_summary.tex'}")
+    path = tables_dir / f"test_summary_{dataset}.tex"
+    path.write_text(tex + "\n")
+    print(f"  saved {path}")
 
-    palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
-    tick_labels = [adapter_labels[a] for a in adapters]
+    palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2", "#937860"]
+    labels = [f[0] for f in families]
 
+    # --- Headline bar chart: ACC@FAR=5% with 95% CI ---
     means, margins = [], []
-    for a in adapters:
-        vals = slice_at.loc[slice_at["p_adapter"] == a, "m_eer"].dropna()
-        n = len(vals)
-        sem = vals.std(ddof=1) / np.sqrt(n)
-        t_crit = stats.t.ppf(0.975, df=n - 1)
-        means.append(vals.mean())
-        margins.append(t_crit * sem)
+    for _, _, s in families:
+        mean, ci = _ci95(s["m_acc_at_far5"])
+        means.append(mean)
+        margins.append(ci)
     fig, ax = plt.subplots()
-    ax.bar(tick_labels, means, yerr=margins, capsize=6, color=palette[:len(adapters)])
-    ax.set_ylabel("EER")
-    ax.set_title(f"Final-test EER (5 held-out words, train_n={TEST_TRAIN_N}, 95% CI)")
+    ax.bar(labels, means, yerr=margins, capsize=6, color=palette[:len(families)])
+    ax.set_ylabel("ACC @ FAR=5%")
+    ax.set_title(f"Final-test ACC @ FAR=5% ({dataset}, train_n={FIXED_TRAIN_N}, 95% CI)")
     ax.grid(axis="y", alpha=0.3)
     plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
     fig.tight_layout()
-    _save(out_dir, "test_eer_ci")
+    _save(out_dir, f"test_{dataset}_acc_at_far5_ci")
 
+    # --- Headline trend: ACC@FAR=5% vs enrollment budget ---
     fig, ax = plt.subplots()
-    for a, color in zip(adapters, palette):
-        sub = test_df[test_df["p_adapter"] == a]
-        agg_tn = sub.groupby("p_train_n")["m_eer"].agg(["mean", "std", "count"]).reset_index()
-        agg_tn = agg_tn.sort_values("p_train_n")
+    for (label, where, _), color in zip(families, palette):
+        sub = _filter(test_df, where)
+        agg_tn = (sub.groupby("p_train_n")["m_acc_at_far5"]
+                  .agg(["mean", "std", "count"]).reset_index().sort_values("p_train_n"))
         ci = 1.96 * agg_tn["std"] / np.sqrt(agg_tn["count"])
         ax.plot(agg_tn["p_train_n"], agg_tn["mean"], marker="o",
-                label=adapter_labels[a], color=color)
+                label=label, color=color)
         ax.fill_between(agg_tn["p_train_n"],
                         agg_tn["mean"] - ci, agg_tn["mean"] + ci,
                         alpha=0.15, color=color)
     ax.set_xlabel("Enrollment size (train_n)")
-    ax.set_ylabel("EER")
-    ax.set_title("Final-test EER vs enrollment budget (5 held-out words)")
+    ax.set_ylabel("ACC @ FAR=5%")
+    ax.set_title(f"Final-test ACC @ FAR=5% vs enrollment budget ({dataset})")
     ax.legend(fontsize=7)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    _save(out_dir, "test_eer_vs_train_n")
+    _save(out_dir, f"test_{dataset}_acc_at_far5_vs_train_n")
 
-    if {"GMMAdapter", "SmallAEAdapter"}.issubset(set(adapters)):
+    # --- Paired GMM-vs-AE significance on the headline metric ---
+    gmm_where = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
+    ae_where = {"p_adapter": "SmallAEAdapter"}
+    gmm_s = _filter(slice_at, gmm_where)
+    ae_s = _filter(slice_at, ae_where)
+    if not gmm_s.empty and not ae_s.empty:
         idx = ["p_trial", "p_target_class"]
-        gmm_eer = slice_at[slice_at["p_adapter"] == "GMMAdapter"].set_index(idx)["m_eer"]
-        ae_eer = slice_at[slice_at["p_adapter"] == "SmallAEAdapter"].set_index(idx)["m_eer"]
-        paired = pd.concat([gmm_eer.rename("gmm"), ae_eer.rename("ae")], axis=1).dropna()
-        diff = paired["ae"] - paired["gmm"]
-        t, p = stats.ttest_rel(paired["ae"], paired["gmm"])
-        d = diff.mean() / diff.std(ddof=1)
-        print(f"  paired t-test (AE - GMM) at train_n={TEST_TRAIN_N}: "
-              f"n={len(paired)}  mean={diff.mean():+.4f}  d={d:+.3f}  "
-              f"t={t:+.3f}  p={p:.4g}")
+        gmm_acc = gmm_s.set_index(idx)["m_acc_at_far5"]
+        ae_acc = ae_s.set_index(idx)["m_acc_at_far5"]
+        paired = pd.concat([gmm_acc.rename("gmm"), ae_acc.rename("ae")], axis=1).dropna()
+        if len(paired) >= 2:
+            diff = paired["gmm"] - paired["ae"]
+            t, p = stats.ttest_rel(paired["gmm"], paired["ae"])
+            d = diff.mean() / diff.std(ddof=1) if diff.std(ddof=1) else float("nan")
+            print(f"  paired t-test (GMM - AE) ACC@FAR=5% at train_n={FIXED_TRAIN_N}: "
+                  f"n={len(paired)}  mean={diff.mean():+.4f}  d={d:+.3f}  "
+                  f"t={t:+.3f}  p={p:.4g}")
 
 
 def print_headline_table(df: pd.DataFrame):
@@ -629,7 +641,7 @@ def main():
     section_confidence(df, out_dir)
     section_cost(df, out_dir)
     section_tables(df, tables_dir, dataset)
-    section_final_test(args.test_parquet, out_dir, tables_dir)
+    section_final_test(args.test_parquet, out_dir, tables_dir, dataset)
     print_headline_table(df)
 
     print("\nDone.")

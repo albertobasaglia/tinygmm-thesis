@@ -6,10 +6,15 @@ from ..adapters import (
     SmallAEAdapter,
 )
 from ..sweep import sweep
+from .frozen import make_test_configs as _make_test_configs
 
 PROVIDER = "har"
 CHECKPOINT = "har_test_8.ckpt"
 TRAIN_N = list(range(5, 200, 5))
+
+
+def make_test_configs(embedding_dim: int, device: str) -> list:
+    return _make_test_configs(embedding_dim, device, TRAIN_N)
 
 
 def make_configs(embedding_dim: int, device: str) -> list:
