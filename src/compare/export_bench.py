@@ -113,7 +113,7 @@ def _family(cfg: dict) -> str:
         return f"GMM {cfg['cov']}"
     if cfg["name"] == "knn":
         return f"kNN k={cfg['k']}"
-    return "SmallAE"
+    return "AE"
 
 
 def _label(cfg: dict) -> str:
@@ -121,7 +121,7 @@ def _label(cfg: dict) -> str:
         return f"GMM K={cfg['K']} {cfg['cov']}"
     if cfg["name"] == "knn":
         return f"kNN N={cfg['N']} k={cfg['k']}"
-    return f"SmallAE L={cfg['L']}"
+    return f"AE L={cfg['L']}"
 
 
 def fig_us_vs_flops(rows: list[dict], out_dir: Path):
