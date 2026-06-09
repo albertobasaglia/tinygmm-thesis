@@ -9,7 +9,7 @@ from ..sweep import sweep
 from .frozen import make_test_configs as _make_test_configs
 
 PROVIDER = "har"
-CHECKPOINT = "logs/har_extractor/version_0/checkpoints/har_extractor_ch32-64-128_emb16_dp0.1_seed42.ckpt"
+CHECKPOINT = "checkpoints/har/best.ckpt"
 TRAIN_N = list(range(5, 200, 5))
  
 

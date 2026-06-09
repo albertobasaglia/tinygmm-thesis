@@ -1,0 +1,25 @@
+channels: !!python/tuple
+- 32
+- 64
+- 128
+dropout_p: 0.1
+embedding_dim: 16
+held_out_subjects:
+- 1600
+- 1601
+- 1602
+- 1603
+- 1604
+- 1605
+- 1606
+- 1607
+- 1608
+- 1609
+in_channels: 6
+lr: 0.001
+lr_factor: 0.5
+lr_min: 1.0e-06
+lr_patience: 3
+num_classes: 41
+optimizer: adamw
+weight_decay: 0.0001

@@ -1,0 +1,24 @@
+channels: !!python/tuple
+- 32
+- 64
+- 128
+dropout_p: 0.1
+embedding_dim: 16
+held_out_words:
+- learn
+- three
+- eight
+- up
+- follow
+- tree
+- bird
+- down
+- dog
+- left
+- visual
+- five
+- seven
+- 'no'
+- 'off'
+lr: 0.001
+num_classes: 20

@@ -180,6 +180,8 @@ cache/
 .DS_Store
 
 *.ckpt
+# but keep the curated, version-controlled feature-extractor checkpoints
+!checkpoints/**/*.ckpt
 
 lightning_logs/
 logs/

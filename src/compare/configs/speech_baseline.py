@@ -9,7 +9,7 @@ from ..sweep import sweep
 from .frozen import make_test_configs as _make_test_configs
 
 PROVIDER = "speech"
-CHECKPOINT = "logs/speech_extractor/version_0/checkpoints/speech_extractor_ch32-64-128_emb16_dp0.1_seed42-epoch=35-val_loss=0.1538.ckpt"
+CHECKPOINT = "checkpoints/speech/best.ckpt"
 
 TRAIN_N = list(range(5, 200, 5))
 
