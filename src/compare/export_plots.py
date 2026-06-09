@@ -15,7 +15,7 @@ parquet stem with leading 'sweep_' and trailing '_latest' stripped.
 The LaTeX summary table (section E) is written to <out>/../tables/.
 
 Plot structure (matches the results chapter):
-  A. Hyperparameter selection  (covariance, K, k, AE dropout)
+  A. Hyperparameter selection  (covariance, K, k, AE latent dim)
   B. Main adapter comparison   (best-of-each)
   C. Statistical confidence    (95% CI bar charts)
   D. Computational cost        (inference FLOPs + Pareto)
@@ -74,6 +74,11 @@ GMM_COV_LINES = [
     ("K=1 sph",  {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "spherical"}),
     ("K=2 sph",  {"p_adapter": "GMMAdapter", "p_n_components": 2, "p_covariance_type": "spherical"}),
     ("K=3 sph",  {"p_adapter": "GMMAdapter", "p_n_components": 3, "p_covariance_type": "spherical"}),
+]
+
+AE_LINES = [
+    ("L=4", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 100}),
+    ("L=8", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 8, "p_epochs": 100}),
 ]
 
 PARETO_LINES = [
@@ -268,19 +273,15 @@ def section_hyperparam(df: pd.DataFrame, out_dir: Path):
         fig.tight_layout()
         _save(out_dir, "knn_k_selection")
 
-    if "p_dropout_p" not in df.columns:
-        print("  skipped ae_dropout_eer (no AE dropout rows)")
+    # AE latent-dim selection (epochs fixed at 100), headline ACC@FAR=5%.
+    if _filter(df, {"p_adapter": "SmallAEAdapter"}).empty:
+        print("  skipped ae_acc_at_far5 (no AE rows)")
     else:
-        dropout_lines = [
-            ("AE no-dropout",    {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                                  "p_dropout_p": 0.0}),
-            ("AE dropout_p=0.2", {"p_adapter": "SmallAEAdapter", "p_latent_dim": 4, "p_epochs": 30,
-                                  "p_dropout_p": 0.2}),
-        ]
-        plot_lines(df, x="p_train_n", y="m_eer", lines=dropout_lines,
-                   out_path=out_dir / "ae_dropout_eer.pdf",
-                   title="AE dropout ablation")
-        print("  saved ae_dropout_eer.pdf")
+        plot_lines(df, x="p_train_n", y="m_acc_at_far5", lines=AE_LINES,
+                   out_path=out_dir / "ae_acc_at_far5.pdf",
+                   title="AE: ACC @ FAR=5% by latent dim",
+                   ylabel="ACC @ FAR=5%")
+        print("  saved ae_acc_at_far5.pdf")
 
 
 def section_compare(df: pd.DataFrame, out_dir: Path):
