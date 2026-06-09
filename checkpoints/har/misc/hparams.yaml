@@ -15,11 +15,16 @@ held_out_subjects:
 - 1607
 - 1608
 - 1609
+- 1610
+- 1611
+- 1612
+- 1613
+- 1614
 in_channels: 6
 lr: 0.001
 lr_factor: 0.5
 lr_min: 1.0e-06
 lr_patience: 3
-num_classes: 41
+num_classes: 36
 optimizer: adamw
 weight_decay: 0.0001
