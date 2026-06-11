@@ -314,7 +314,7 @@ def section_confidence(df: pd.DataFrame, out_dir: Path):
     print("  saved ci_acc_at_far5.pdf")
 
 
-def section_cost(df: pd.DataFrame, out_dir: Path):
+def section_cost(df: pd.DataFrame, out_dir: Path, emit_acc_pareto: bool = True):
     print("D. Computational cost (Pareto)")
 
     # The dataset-independent resource artifacts (inference FLOPs bar, FLOPs vs
@@ -324,17 +324,33 @@ def section_cost(df: pd.DataFrame, out_dir: Path):
     # being re-emitted (and duplicated) per dataset here. Only the Pareto plots
     # belong here, because their accuracy axis is dataset-specific.
 
-    # EER Pareto (lower is better) -- supporting material.
+    # EER Pareto (lower is better) -- supporting material. Always from the
+    # validation sweep, which carries the full per-adapter point clouds.
     _pareto_figure(df, out_dir, name="pareto_inference",
                    y="m_eer", ylabel="EER (lower is better)",
                    title="Pareto Frontier: EER vs Inference FLOPs",
                    lower_y_better=True)
 
-    # ACC@FAR=5% Pareto (higher is better) -- headline metric.
-    _pareto_figure(df, out_dir, name="pareto_acc_at_far5",
-                   y="m_acc_at_far5", ylabel="ACC @ FAR=5% (higher is better)",
-                   title="Pareto Frontier: ACC @ FAR=5% vs Inference FLOPs",
-                   lower_y_better=False)
+    # ACC@FAR=5% Pareto (higher is better) -- headline metric. When a held-out
+    # test parquet is supplied, section_final_test emits this from the TEST
+    # accuracy of the frozen families instead, so the headline frontier matches
+    # the test-led results. Skip it here in that case to avoid overwriting it
+    # with the validation version.
+    if emit_acc_pareto:
+        _pareto_figure(df, out_dir, name="pareto_acc_at_far5",
+                       y="m_acc_at_far5", ylabel="ACC @ FAR=5% (higher is better)",
+                       title="Pareto Frontier: ACC @ FAR=5% vs Inference FLOPs",
+                       lower_y_better=False)
+
+
+def _pareto_axes(ax, ylabel: str, title: str):
+    """Apply the shared Pareto axis style (log-x FLOPs, labels, grid)."""
+    ax.set_xscale("log")
+    ax.set_xlabel("Inference FLOPs")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(alpha=0.3, which="both")
 
 
 def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
@@ -359,12 +375,40 @@ def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
             order = np.argsort(px)
             ax.scatter(px, py, s=35, color=color, label=label, zorder=3)
             ax.plot(px[order], py[order], color=color, linewidth=1.5, alpha=0.7, zorder=2)
-    ax.set_xscale("log")
-    ax.set_xlabel("Inference FLOPs")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.legend()
-    ax.grid(alpha=0.3, which="both")
+    _pareto_axes(ax, ylabel, title)
+    fig.tight_layout()
+    _save(out_dir, name)
+
+
+def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
+                            ylabel: str, title: str, lower_y_better: bool):
+    """Pareto scatter for one point per frozen family (label, FLOPs, accuracy).
+
+    Used for the headline ACC@FAR=5% frontier built from the held-out TEST
+    accuracy of the six selected configs (one (FLOPs, accuracy) point each).
+    Pareto-optimal points are highlighted and connected; dominated points are
+    drawn faint. x (FLOPs) is always minimized; y maximized for ACC@FAR=5%.
+    """
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    pareto = _pareto_mask(xs, ys, lower_y_better=lower_y_better)
+
+    fig, ax = plt.subplots()
+    palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2", "#937860"]
+    for i, label in enumerate(labels):
+        color = palette[i % len(palette)]
+        on = bool(pareto[i])
+        ax.scatter(xs[i], ys[i], s=45 if on else 22,
+                   color=color, alpha=1.0 if on else 0.45,
+                   zorder=3 if on else 2,
+                   edgecolors="black" if on else "none", linewidths=0.6,
+                   label=label)
+    # Connect the frontier points in increasing FLOPs.
+    if pareto.any():
+        order = np.argsort(xs[pareto])
+        ax.plot(xs[pareto][order], ys[pareto][order],
+                color="0.4", linewidth=1.3, alpha=0.7, zorder=1)
+    _pareto_axes(ax, ylabel, title)
     fig.tight_layout()
     _save(out_dir, name)
 
@@ -563,6 +607,22 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
     fig.tight_layout()
     _save(out_dir, f"test_{dataset}_acc_at_far5_vs_train_n")
 
+    # --- Headline ACC@FAR=5% Pareto (TEST accuracy vs inference FLOPs) ---
+    # One point per frozen family: cost is the (dataset-independent) inference
+    # FLOPs, accuracy is the held-out test mean. This replaces the validation
+    # Pareto so the headline frontier matches the test-led results chapter.
+    pareto_labels, pareto_x, pareto_y = [], [], []
+    for label, _, s in families:
+        pareto_labels.append(label)
+        pareto_x.append(float(s["m_inference_flops"].iloc[0]))
+        pareto_y.append(float(s["m_acc_at_far5"].mean()))
+    _pareto_families_figure(
+        pareto_labels, pareto_x, pareto_y, out_dir,
+        name="pareto_acc_at_far5",
+        ylabel="ACC @ FAR=5% (higher is better)",
+        title="Pareto Frontier: ACC @ FAR=5% vs Inference FLOPs (held-out test)",
+        lower_y_better=False)
+
     # --- Paired GMM-vs-AE significance on the headline metric ---
     gmm_where = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
     ae_where = {"p_adapter": "SmallAEAdapter"}
@@ -637,10 +697,16 @@ def main():
     print(f"Writing PDFs to {out_dir}")
     print(f"Writing tables to {tables_dir}\n")
 
+    # When a held-out test parquet is supplied, the headline ACC@FAR=5% Pareto
+    # is emitted from TEST accuracy by section_final_test, so section_cost must
+    # not overwrite it with the validation version. The supporting EER Pareto
+    # stays on the validation sweep regardless.
+    have_test = args.test_parquet is not None and args.test_parquet.exists()
+
     section_hyperparam(df, out_dir)
     section_compare(df, out_dir)
     section_confidence(df, out_dir)
-    section_cost(df, out_dir)
+    section_cost(df, out_dir, emit_acc_pareto=not have_test)
     section_tables(df, tables_dir, dataset)
     section_final_test(args.test_parquet, out_dir, tables_dir, dataset)
     print_headline_table(df)
