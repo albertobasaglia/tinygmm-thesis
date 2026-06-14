@@ -17,6 +17,7 @@ Usage:
 
 Writes:
     <out>/inference_flops_bar.pdf
+    <out>/enrollment_flops_bar.pdf
     <out>/inference_flops_vs_train_n.pdf
     <tables>/resource.tex            (label: tab:resource)
 """
@@ -66,27 +67,45 @@ def _adapter_specs(D: int):
         ("GMM K=1 diag", lambda n: GMMAdapter(n_components=1, covariance_type="diag", train_n=n, seed=0)),
         ("GMM K=1 full", lambda n: GMMAdapter(n_components=1, covariance_type="full", train_n=n, seed=0)),
         ("kNN k=5",      lambda n: KNNAdapter(k=5, train_n=n)),
-        ("SmallAE",      lambda n: SmallAEAdapter(input_dim=D, latent_dim=8, epochs=1, train_n=n, seed=0)),
+        # epochs=100 matches the selected AE config in configs/frozen.py, so the
+        # enrollment-FLOPs column reflects the real fit cost (inference FLOPs and
+        # parameter count do not depend on epochs).
+        ("SmallAE",      lambda n: SmallAEAdapter(input_dim=D, latent_dim=8, epochs=100, train_n=n, seed=0)),
         ("Cosine",       lambda n: CosineAdapter(train_n=n)),
         ("Prototype",    lambda n: PrototypeAdapter(train_n=n)),
     ]
 
 
-def _costs(D: int, n: int) -> dict[str, tuple[int, int]]:
-    """Structural (inference FLOPs, stored parameters) per adapter at
-    enrollment size n. The adapters are fit on synthetic data only to populate
-    the shapes their cost models read; the counts do not depend on the data."""
+def _costs(D: int, n: int) -> dict[str, tuple[int, int, int]]:
+    """Structural (inference FLOPs, stored parameters, one-time enrollment FLOPs)
+    per adapter at enrollment size n. The adapters are fit on synthetic data only
+    to populate the shapes their cost models read; the counts do not depend on the
+    data (the GMM's EM converges in the same 2 iterations across all three real
+    datasets, so its enrollment cost is dataset-independent too)."""
     rng = np.random.default_rng(0)
     X = rng.standard_normal((n, D)).astype(np.float32)
-    out: dict[str, tuple[int, int]] = {}
+    out: dict[str, tuple[int, int, int]] = {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # ill-conditioned cov / convergence at tiny n
         for label, factory in _adapter_specs(D):
             adapter = factory(n)
             adapter.fit(X)
-            params = adapter.parameters()
-            out[label] = (adapter.inference_flops(), params)
+            # Report the best-case GMM enrollment: a single closed-form pass
+            # (one weighted mean and covariance). For K=1 the MLE is exact in one
+            # pass, whereas sklearn's EM wrapper runs ~2 iterations; charging one
+            # iteration is the lowest achievable fit cost.
+            gmm = getattr(adapter, "_gmm", None)
+            if gmm is not None:
+                gmm.n_iter_ = 1
+            out[label] = (adapter.inference_flops(), adapter.parameters(),
+                          adapter.training_flops())
     return out
+
+
+def _grp(n: int) -> str:
+    """Integer with thin-space thousands separators for a tabular cell, e.g.
+    11256000 -> '11\\,256\\,000'."""
+    return f"{n:,}".replace(",", "\\,")
 
 
 def write_table(D: int, train_n: int, tables_dir: Path):
@@ -94,21 +113,27 @@ def write_table(D: int, train_n: int, tables_dir: Path):
     costs = _costs(D, train_n)
     rows = []
     for label, _ in _adapter_specs(D):
-        flops, params = costs[label]
-        rows.append(f"    {label} & {flops:.0f} & {params:.0f} \\\\")
+        infer, params, enroll = costs[label]
+        rows.append(f"    {label} & {_grp(infer)} & {_grp(enroll)} & {_grp(params)} \\\\")
     tex = "\n".join([
         "\\begin{table}[htbp]",
         "  \\centering",
         f"  \\caption{{Resource cost per adaptive layer at \\texttt{{train\\_n}}={train_n}:"
-        " per-sample inference FLOPs and stored parameters. These are"
-        " deterministic structural counts that depend"
+        " per-sample inference FLOPs, one-time enrollment (fit) FLOPs, and stored"
+        " parameters. These are deterministic structural counts that depend"
         f" only on the adaptive layer and the embedding dimension ($D={D}$, shared by all"
         " three datasets), not on the dataset, so a single table applies"
-        " throughout and no confidence interval is reported.}",
+        " throughout and no confidence interval is reported. The enrollment count"
+        " is the cost of the one-time fit (the autoencoder's 100-epoch training"
+        " loop, a single mean for cosine and the prototype); for the GMM it is the"
+        " best case of a single closed-form pass over the enrollment set, one"
+        " weighted mean and covariance, since for one component the maximum-likelihood"
+        " fit is exact in one pass. The k-nearest-neighbor baseline only stores its"
+        " vectors and so does no fitting arithmetic.}",
         "  \\label{tab:resource}",
-        "  \\begin{tabular}{lrr}",
+        "  \\begin{tabular}{lrrr}",
         "    \\toprule",
-        "    Adaptive layer & Inference FLOPs & Parameters \\\\",
+        "    Adaptive layer & Inference FLOPs & Enrollment FLOPs & Parameters \\\\",
         "    \\midrule",
         "\n".join(rows),
         "    \\bottomrule",
@@ -139,6 +164,37 @@ def fig_bar(D: int, train_n: int, out_dir: Path):
     print(f"  saved {path}")
 
 
+def fig_enroll_bar(D: int, train_n: int, out_dir: Path):
+    """One-time enrollment (fit) FLOPs per adapter, log y-axis.
+
+    Mirrors fig_bar but for the enrollment cost, which spans several orders of
+    magnitude (from the prototype's single mean to the autoencoder's training
+    loop), so a log scale is used. Adapters with zero fit cost (kNN only stores
+    its vectors) are drawn at the axis floor and labelled "0"."""
+    costs = _costs(D, train_n)
+    labels = [label for label, _ in _adapter_specs(D)]
+    enroll = [costs[label][2] for label in labels]
+
+    floor = 0.5  # log axis has no zero; draw zero-cost bars as an invisible stub
+    heights = [v if v > 0 else floor for v in enroll]
+    bar_labels = [f"{v:,}" for v in enroll]
+
+    fig, ax = plt.subplots()
+    bars = ax.bar(labels, heights)
+    ax.set_yscale("log")
+    ax.set_ylim(bottom=floor)
+    ax.bar_label(bars, labels=bar_labels)
+    ax.set_ylabel("Enrollment FLOPs (one-time)")
+    ax.set_title(f"Enrollment cost (train_n={train_n})")
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+    ax.grid(axis="y", alpha=0.3, which="both")
+    fig.tight_layout()
+    path = out_dir / "enrollment_flops_bar.pdf"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved {path}")
+
+
 def fig_vs_train_n(D: int, ns: list[int], out_dir: Path):
     labels = [label for label, _ in _adapter_specs(D)]
     series = {label: [] for label in labels}
@@ -149,7 +205,7 @@ def fig_vs_train_n(D: int, ns: list[int], out_dir: Path):
 
     fig, ax = plt.subplots()
     for label in labels:
-        ax.plot(ns, series[label], marker="o", label=label)
+        ax.plot(ns, series[label], label=label)
     ax.set_xlabel("Enrollment size (train_n)")
     ax.set_ylabel("Inference FLOPs per sample")
     ax.set_title("Inference cost vs enrollment size")
@@ -189,16 +245,17 @@ def main():
     print(f"Writing table to {args.tables}\n")
 
     costs = _costs(args.dim, args.train_n)
-    fmt = "  {:<14} {:>10} {:>12}"
-    print(fmt.format("Adapter", "InfFLOPs", "Params"))
-    print(fmt.format("-------", "--------", "-----"))
+    fmt = "  {:<14} {:>10} {:>14} {:>12}"
+    print(fmt.format("Adapter", "InfFLOPs", "EnrollFLOPs", "Params"))
+    print(fmt.format("-------", "--------", "-----------", "-----"))
     for label, _ in _adapter_specs(args.dim):
-        f, params = costs[label]
-        print(fmt.format(label, f, params))
+        infer, params, enroll = costs[label]
+        print(fmt.format(label, infer, enroll, params))
     print()
 
     write_table(args.dim, args.train_n, args.tables)
     fig_bar(args.dim, args.train_n, args.out)
+    fig_enroll_bar(args.dim, args.train_n, args.out)
     fig_vs_train_n(args.dim, ns, args.out)
 
     print("\nDone.")

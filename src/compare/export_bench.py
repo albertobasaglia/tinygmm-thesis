@@ -15,8 +15,15 @@ Usage:
         --out tinygmm-tex/figures/resource --tables tinygmm-tex/tables
 
 Writes:
-    <out>/bench_us_vs_flops.pdf      (label: fig:bench_us_vs_flops)
-    <tables>/bench.tex               (label: tab:bench)
+    <out>/bench_us_vs_flops.pdf       (label: fig:bench_us_vs_flops; D=16, main text)
+    <out>/bench_dim_us_vs_flops.pdf   (label: fig:bench_dim; all D, appendix)
+    <tables>/bench.tex                (label: tab:bench; D=16, main text)
+    <tables>/bench_full.tex           (label: tab:bench-full; all D, appendix)
+
+The accuracy and personalization experiments use D=16 throughout, so the main
+text reports only the D=16 benchmark. The full sweep additionally covers D=32 to
+confirm that the analytical cost model tracks the measured time as the embedding
+dimension changes; that cross-check is preserved in the appendix artifacts.
 """
 
 import argparse
@@ -124,17 +131,18 @@ def _label(cfg: dict) -> str:
     return f"AE L={cfg['L']}"
 
 
-def fig_us_vs_flops(rows: list[dict], out_dir: Path):
+def fig_us_vs_flops(rows: list[dict], out_dir: Path, fname: str):
     families: dict[str, list[dict]] = {}
     for r in rows:
         families.setdefault(_family(r), []).append(r)
 
+    dims = sorted({r["D"] for r in rows})
     fig, ax = plt.subplots()
     markers = {16: "o", 32: "s"}
     for fam, frows in families.items():
         frows = sorted(frows, key=lambda r: r["flops"])
         color = None
-        for D in (16, 32):
+        for D in dims:
             drows = [r for r in frows if r["D"] == D]
             if not drows:
                 continue
@@ -142,7 +150,7 @@ def fig_us_vs_flops(rows: list[dict], out_dir: Path):
                 [r["flops"] for r in drows], [r["us"] for r in drows],
                 marker=markers[D], linestyle="--", linewidth=0.8,
                 color=color, markerfacecolor="none" if D == 32 else None,
-                label=fam if D == 16 else None,
+                label=fam if D == dims[0] else None,
             )
             color = line.get_color()
     ax.set_xscale("log")
@@ -151,16 +159,18 @@ def fig_us_vs_flops(rows: list[dict], out_dir: Path):
     ax.set_ylabel("Measured time per inference [µs]")
     ax.set_title("Measured on-device cost vs structural FLOP count")
     ax.grid(alpha=0.3, which="both")
-    leg = ax.legend(title="filled: D=16, hollow: D=32")
+    title = "filled: D=16, hollow: D=32" if len(dims) > 1 else "D=16"
+    leg = ax.legend(title=title)
     leg.get_title().set_fontsize(8)
     fig.tight_layout()
-    path = out_dir / "bench_us_vs_flops.pdf"
+    path = out_dir / fname
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved {path}")
 
 
-def write_table(rows: list[dict], tables_dir: Path):
+def write_table(rows: list[dict], tables_dir: Path, fname: str,
+                label: str, caption: str):
     tables_dir.mkdir(parents=True, exist_ok=True)
     body = []
     last_fam = None
@@ -177,12 +187,8 @@ def write_table(rows: list[dict], tables_dir: Path):
     tex = "\n".join([
         "\\begin{table}[htbp]",
         "  \\centering",
-        "  \\caption{Measured per-inference time on the ESP32-S3 benchmark"
-        " against the analytical inference-FLOP count of each configuration."
-        " The last column is the implied time per counted FLOP; it is stable"
-        " within each computational pattern and varies across patterns because"
-        " transcendental operations are charged as one FLOP each.}",
-        "  \\label{tab:bench}",
+        f"  \\caption{{{caption}}}",
+        f"  \\label{{{label}}}",
         "  \\begin{tabular}{lrrrr}",
         "    \\toprule",
         "    Configuration & $D$ & FLOPs & Measured [µs] & ns/FLOP \\\\",
@@ -192,9 +198,38 @@ def write_table(rows: list[dict], tables_dir: Path):
         "  \\end{tabular}",
         "\\end{table}",
     ])
-    path = tables_dir / "bench.tex"
+    path = tables_dir / fname
     path.write_text(tex + "\n")
     print(f"  saved {path}")
+
+
+def _print_stats(rows: list[dict], tag: str):
+    """Log-domain fit quality and pairwise-ordering agreement for a row set.
+
+    Reports the statistics the results chapter cites: the log-log correlation,
+    the power-law slope, the worst miss of a single global constant times the
+    count, and how many pairwise cost orderings invert against the silicon.
+    """
+    flops = np.array([r["flops"] for r in rows], float)
+    us = np.array([r["us"] for r in rows], float)
+    logf, logu = np.log(flops), np.log(us)
+    r_log = float(np.corrcoef(logf, logu)[0, 1])
+    slope = float(np.polyfit(logf, logu, 1)[0])
+    logc = float(np.mean(logu - logf))            # best single global constant
+    max_miss = float(np.exp(np.max(np.abs(logu - logf - logc))))
+
+    n = len(rows)
+    n_pairs = n * (n - 1) // 2
+    inv = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            df, du = flops[i] - flops[j], us[i] - us[j]
+            if df == 0:
+                continue
+            if (df > 0) != (du > 0):
+                inv += 1
+    print(f"\n  [{tag}] n={n}  log-log r={r_log:.3f}  slope={slope:.2f}  "
+          f"max-miss-factor={max_miss:.2f}  inversions={inv}/{n_pairs}")
 
 
 def main():
@@ -211,6 +246,7 @@ def main():
     args = parser.parse_args()
 
     rows = parse_bench(args.bench)
+    rows16 = [r for r in rows if r["D"] == 16]
     args.out.mkdir(parents=True, exist_ok=True)
 
     fmt = "  {:<22} {:>4} {:>7} {:>9} {:>9}"
@@ -220,14 +256,31 @@ def main():
         print(fmt.format(_label(r), r["D"], r["flops"], f"{r['us']:.2f}",
                          f"{1e3 * r['us'] / r['flops']:.1f}"))
 
-    logf = np.log([r["flops"] for r in rows])
-    logu = np.log([r["us"] for r in rows])
-    r_log = float(np.corrcoef(logf, logu)[0, 1])
-    slope = float(np.polyfit(logf, logu, 1)[0])
-    print(f"\n  log-log Pearson r = {r_log:.3f}, power-law slope = {slope:.2f}")
+    _print_stats(rows16, "D=16 (main text)")
+    _print_stats(rows, "all D (appendix)")
 
-    fig_us_vs_flops(rows, args.out)
-    write_table(rows, args.tables)
+    main_caption = (
+        "Measured per-inference time on the ESP32-S3 benchmark against the"
+        " analytical inference-FLOP count of each configuration, at the"
+        " embedding dimension $D=16$ used throughout the experiments. The last"
+        " column is the implied time per counted FLOP; it is stable within each"
+        " computational pattern and varies across patterns because transcendental"
+        " operations are charged as one FLOP each."
+    )
+    full_caption = (
+        "Full benchmark sweep, extending Table~\\ref{tab:bench} with $D=32$"
+        " configurations. The accuracy experiments use $D=16$ only; the $D=32$"
+        " measurements are included solely to check that the analytical cost"
+        " model tracks the measured time as the embedding dimension changes,"
+        " confirming the quadratic-in-$D$ growth of the full covariance and the"
+        " linear-in-$D$ growth of the diagonal and distance kernels on silicon."
+    )
+
+    fig_us_vs_flops(rows16, args.out, "bench_us_vs_flops.pdf")
+    fig_us_vs_flops(rows, args.out, "bench_dim_us_vs_flops.pdf")
+    write_table(rows16, args.tables, "bench.tex", "tab:bench", main_caption)
+    write_table(rows, args.tables, "bench_full.tex", "tab:bench-full",
+                full_caption)
 
 
 if __name__ == "__main__":

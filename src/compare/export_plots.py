@@ -91,6 +91,13 @@ PARETO_LINES = [
 
 FIXED_TRAIN_N = int(os.getenv("TRAIN_N", "50"))
 
+DATASET_PRETTY = {"speech": "Speech", "har": "HAR", "pendigits": "Pendigits"}
+
+
+def _pretty_dataset(dataset: str) -> str:
+    """Display name for a dataset key, e.g. 'har' -> 'HAR'."""
+    return DATASET_PRETTY.get(dataset, dataset.replace("_", " ").title())
+
 
 def _pareto_mask(x: np.ndarray, y: np.ndarray, lower_y_better: bool = True) -> np.ndarray:
     """Boolean mask for Pareto-optimal points.
@@ -133,8 +140,8 @@ def _dataset_name(parquet: Path) -> str:
 
 
 def _refresh_structural_costs(df: pd.DataFrame) -> pd.DataFrame:
-    """Overwrite m_inference_flops and m_parameters with values recomputed
-    from the current cost models in adapters.py.
+    """Overwrite m_inference_flops, m_parameters and m_training_flops with
+    values recomputed from the current cost models in adapters.py.
 
     The sweep bakes these structural counts into the parquet at sweep time,
     so a later cost-model fix would silently leave the Pareto plots on the
@@ -142,42 +149,70 @@ def _refresh_structural_costs(df: pd.DataFrame) -> pd.DataFrame:
     on the same accounting as export_resource and export_bench, which
     already compute live. As there, a synthetic fit only populates the
     shapes the cost models read; the counts do not depend on the data.
+
+    The enrollment (fit) count m_training_flops needs one extra convention to
+    stay consistent with export_resource's enrollment bar chart and the
+    resource table: those report the GMM's *best-case* fit as a single
+    closed-form pass (one weighted mean and covariance), so they set
+    n_iter_=1 before reading training_flops(). The raw m_training_flops baked
+    into the parquet instead reflects sklearn's actual EM (~2 iterations) and
+    would disagree with fig:enroll_flops_bar. We mirror the n_iter_=1
+    convention here so the enrollment Pareto agrees with both. The other
+    adapters' fit costs scale only with the enrollment size (and the AE's
+    epoch count), which the cost models read from the reconstructed adapter,
+    so no fit is required for them; the GMM is fit only to populate the shapes
+    its cost model reads.
     """
     rng = np.random.default_rng(0)
-    cache: dict[tuple, tuple[int, int] | None] = {}
+    cache: dict[tuple, tuple[int, int, int] | None] = {}
 
     def val(row, col):
         v = row.get(col)
         return None if v is None or pd.isna(v) else v
 
     def costs(row):
+        # p_epochs joins the key because the AE's enrollment FLOPs scale with
+        # the number of training epochs (inference FLOPs and parameters do not).
         key = (row["p_adapter"], val(row, "p_embedding_dim"),
                val(row, "p_n_components"), val(row, "p_covariance_type"),
-               val(row, "p_k"), val(row, "p_train_n"), val(row, "p_latent_dim"))
+               val(row, "p_k"), val(row, "p_train_n"), val(row, "p_latent_dim"),
+               val(row, "p_epochs"))
         if key in cache:
             return cache[key]
-        name, D, K, cov, k, n, L = key
+        name, D, K, cov, k, n, L, epochs = key
         D = int(D)
         a = None
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # ill-conditioned cov / convergence
             if name == "GMMAdapter":
+                # Fit at the row's own enrollment size so the EM cost model sees
+                # the right N; inference FLOPs and parameters do not depend on N.
                 a = GMMAdapter(n_components=int(K), covariance_type=cov,
-                               train_n=50, seed=0)
-                a.fit(rng.standard_normal((50, D)).astype(np.float32))
+                               train_n=int(n), seed=0)
+                a.fit(rng.standard_normal((int(n), D)).astype(np.float32))
+                # Charge the best-case single closed-form pass, mirroring
+                # export_resource so the enrollment Pareto agrees with
+                # fig:enroll_flops_bar and tab:resource.
+                a._gmm.n_iter_ = 1
             elif name == "KNNAdapter":
                 a = KNNAdapter(k=int(k), train_n=int(n))
                 a.fit(rng.standard_normal((int(n), D)).astype(np.float32))
             elif name == "SmallAEAdapter":
-                # The AE cost model reads only constructor fields; no fit needed.
-                a = SmallAEAdapter(input_dim=D, latent_dim=int(L))
+                # The AE cost model reads only constructor fields (train_n and
+                # epochs included); _fitted_train_n falls back to train_n when
+                # unfit, so no fit is needed for either FLOP count.
+                a = SmallAEAdapter(input_dim=D, latent_dim=int(L),
+                                   epochs=int(epochs), train_n=int(n))
             elif name == "CosineAdapter":
-                a = CosineAdapter()
-                a.fit(rng.standard_normal((4, D)).astype(np.float32))
+                # Fit at the row's enrollment size so the (mean over N) fit cost
+                # is charged at the right N.
+                a = CosineAdapter(train_n=int(n))
+                a.fit(rng.standard_normal((int(n), D)).astype(np.float32))
             elif name == "PrototypeAdapter":
-                a = PrototypeAdapter()
-                a.fit(rng.standard_normal((4, D)).astype(np.float32))
-        cache[key] = (a.inference_flops(), a.parameters()) if a is not None else None
+                a = PrototypeAdapter(train_n=int(n))
+                a.fit(rng.standard_normal((int(n), D)).astype(np.float32))
+        cache[key] = ((a.inference_flops(), a.parameters(), a.training_flops())
+                      if a is not None else None)
         return cache[key]
 
     fresh = df.apply(costs, axis=1)
@@ -188,15 +223,20 @@ def _refresh_structural_costs(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     new_flops = fresh[known].map(lambda c: c[0])
     new_params = fresh[known].map(lambda c: c[1])
+    new_train_flops = fresh[known].map(lambda c: c[2])
     stale_flops = int((df.loc[known, "m_inference_flops"] != new_flops).sum())
     stale_params = int((df.loc[known, "m_parameters"] != new_params).sum())
+    stale_train = int((df.loc[known, "m_training_flops"] != new_train_flops).sum())
     df.loc[known, "m_inference_flops"] = new_flops
     df.loc[known, "m_parameters"] = new_params
-    if stale_flops or stale_params:
+    df.loc[known, "m_training_flops"] = new_train_flops
+    if stale_flops or stale_params or stale_train:
         warnings.warn(
             "parquet was baked with outdated cost models: refreshed "
-            f"{stale_flops} m_inference_flops and {stale_params} m_parameters "
-            "values; the exported figures use the current formulas"
+            f"{stale_flops} m_inference_flops, {stale_params} m_parameters and "
+            f"{stale_train} m_training_flops values; the exported figures use "
+            "the current formulas (the GMM enrollment count is the best-case "
+            "single-pass fit, matching fig:enroll_flops_bar)"
         )
     else:
         print("Structural costs verified against current cost models (parquet already current)")
@@ -215,10 +255,29 @@ def _ci95(vals: pd.Series) -> tuple[float, float]:
     return mean, ci
 
 
-def _cell(vals: pd.Series, fmt: str = ".3f") -> str:
-    """A 'mean $\\pm$ ci' LaTeX cell at 95% CI."""
+def _cell(vals: pd.Series, fmt: str = ".3f", bold: bool = False) -> str:
+    """A 'mean $\\pm$ ci' LaTeX cell at 95% CI; bold uses \\boldmath (not
+    \\textbf, which does not bold math-mode content)."""
     mean, ci = _ci95(vals)
-    return f"${mean:{fmt}} \\pm {ci:{fmt}}$"
+    s = f"${mean:{fmt}} \\pm {ci:{fmt}}$"
+    return f"{{\\boldmath {s}}}" if bold else s
+
+
+# Direction of "best" per metric column (higher better vs lower better).
+METRIC_HIGHER_BETTER = {"m_acc_at_far5": True, "m_eer": False, "m_auprc": True}
+
+
+def _best_rows(slices: list[pd.Series], metrics: list[str]) -> dict[str, int]:
+    """Row index of the best value per metric: max mean where higher is better,
+    else min. Used to bold the winning cell in each column."""
+    best = {}
+    for m in metrics:
+        means = [s[m].mean() for s in slices]
+        if not means:
+            continue
+        pick = max if METRIC_HIGHER_BETTER.get(m, True) else min
+        best[m] = means.index(pick(means))
+    return best
 
 
 def section_hyperparam(df: pd.DataFrame, out_dir: Path):
@@ -342,11 +401,39 @@ def section_cost(df: pd.DataFrame, out_dir: Path, emit_acc_pareto: bool = True):
                        title="Pareto Frontier: ACC @ FAR=5% vs Inference FLOPs",
                        lower_y_better=False)
 
+    # Enrollment-cost counterparts: the same frontiers against the one-time fit
+    # cost (m_training_flops, refreshed to the best-case single-pass GMM in
+    # _refresh_structural_costs) instead of per-sample inference FLOPs. The EER
+    # version is always emitted as supporting material.
+    _pareto_figure(df, out_dir, name="pareto_enrollment_eer",
+                   y="m_eer", ylabel="EER (lower is better)",
+                   title="Pareto Frontier: EER vs Enrollment FLOPs",
+                   lower_y_better=True,
+                   cost_col="m_training_flops",
+                   xlabel="Enrollment FLOPs (one-time)")
 
-def _pareto_axes(ax, ylabel: str, title: str):
-    """Apply the shared Pareto axis style (log-x FLOPs, labels, grid)."""
+    # The validation ACC@FAR=5% enrollment Pareto is emitted only in the same
+    # branch as its inference counterpart, so when a held-out test parquet is
+    # supplied section_final_test overrides it with the test-led version
+    # (matching the existing inference-Pareto pattern).
+    if emit_acc_pareto:
+        _pareto_figure(df, out_dir, name="pareto_acc_at_far5_enroll",
+                       y="m_acc_at_far5", ylabel="ACC @ FAR=5% (higher is better)",
+                       title="Pareto Frontier: ACC @ FAR=5% vs Enrollment FLOPs",
+                       lower_y_better=False,
+                       cost_col="m_training_flops",
+                       xlabel="Enrollment FLOPs (one-time)")
+
+
+def _pareto_axes(ax, ylabel: str, title: str, xlabel: str = "Inference FLOPs"):
+    """Apply the shared Pareto axis style (log-x FLOPs, labels, grid).
+
+    xlabel defaults to the inference variant; the enrollment Paretos pass
+    "Enrollment FLOPs (one-time)" instead so the two cost axes are named
+    consistently with the resource bar charts.
+    """
     ax.set_xscale("log")
-    ax.set_xlabel("Inference FLOPs")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.legend()
@@ -354,19 +441,34 @@ def _pareto_axes(ax, ylabel: str, title: str):
 
 
 def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
-                   ylabel: str, title: str, lower_y_better: bool):
-    """Scatter of (inference FLOPs, y) per adapter with its Pareto frontier.
+                   ylabel: str, title: str, lower_y_better: bool,
+                   cost_col: str = "m_inference_flops",
+                   xlabel: str = "Inference FLOPs"):
+    """Scatter of (cost, y) per adapter with its Pareto frontier.
 
-    x (FLOPs) is always minimized; y is minimized when lower_y_better, else
-    maximized (so the Pareto-optimal direction flips for ACC@FAR=5%).
+    cost_col selects the x-axis cost: m_inference_flops (per-sample inference,
+    the default) or m_training_flops (the one-time enrollment cost). x (cost)
+    is always minimized; y is minimized when lower_y_better, else maximized
+    (so the Pareto-optimal direction flips for ACC@FAR=5%).
+
+    The cost axis is log-scaled, which has no zero, so any non-positive cost
+    is dropped (the kNN baseline does no fitting arithmetic, so its enrollment
+    FLOPs are 0). Dropped points are logged rather than silently capped, in
+    keeping with the repo's no-silent-caps style.
     """
     fig, ax = plt.subplots()
+    n_dropped = 0
     for label, where in PARETO_LINES:
         subset = _filter(df, where)
         if subset.empty:
             continue
-        agg = subset.groupby("m_inference_flops")[y].mean().reset_index()
-        xs, ys = agg["m_inference_flops"].values, agg[y].values
+        agg = subset.groupby(cost_col)[y].mean().reset_index()
+        xs, ys = agg[cost_col].values.astype(float), agg[y].values
+        positive = xs > 0
+        n_dropped += int((~positive).sum())
+        xs, ys = xs[positive], ys[positive]
+        if len(xs) == 0:
+            continue
         color = ax._get_lines.get_next_color()
         ax.scatter(xs, ys, alpha=0.4, s=10, color=color)
         pareto = _pareto_mask(xs, ys, lower_y_better=lower_y_better)
@@ -375,22 +477,43 @@ def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
             order = np.argsort(px)
             ax.scatter(px, py, s=35, color=color, label=label, zorder=3)
             ax.plot(px[order], py[order], color=color, linewidth=1.5, alpha=0.7, zorder=2)
-    _pareto_axes(ax, ylabel, title)
+    if n_dropped:
+        print(f"  note: dropped {n_dropped} point(s) with non-positive {cost_col} "
+              f"from {name} (log x-axis); typically kNN's zero-cost enrollment")
+    _pareto_axes(ax, ylabel, title, xlabel=xlabel)
     fig.tight_layout()
     _save(out_dir, name)
 
 
 def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
-                            ylabel: str, title: str, lower_y_better: bool):
-    """Pareto scatter for one point per frozen family (label, FLOPs, accuracy).
+                            ylabel: str, title: str, lower_y_better: bool,
+                            xlabel: str = "Inference FLOPs"):
+    """Pareto scatter for one point per frozen family (label, cost, accuracy).
 
     Used for the headline ACC@FAR=5% frontier built from the held-out TEST
-    accuracy of the six selected configs (one (FLOPs, accuracy) point each).
+    accuracy of the six selected configs (one (cost, accuracy) point each).
+    The cost is either inference or enrollment FLOPs; xlabel names which.
     Pareto-optimal points are highlighted and connected; dominated points are
-    drawn faint. x (FLOPs) is always minimized; y maximized for ACC@FAR=5%.
+    drawn faint. x (cost) is always minimized; y maximized for ACC@FAR=5%.
+
+    The cost axis is log-scaled, so families with non-positive cost (e.g. the
+    kNN baseline's zero enrollment FLOPs) are dropped and logged rather than
+    silently capped.
     """
     xs = np.asarray(xs, dtype=float)
     ys = np.asarray(ys, dtype=float)
+    labels = list(labels)
+    positive = xs > 0
+    n_dropped = int((~positive).sum())
+    if n_dropped:
+        dropped = [labels[i] for i in range(len(labels)) if not positive[i]]
+        print(f"  note: dropped {n_dropped} family/families with non-positive "
+              f"cost from {name} (log x-axis): {dropped}")
+        labels = [labels[i] for i in range(len(labels)) if positive[i]]
+        xs, ys = xs[positive], ys[positive]
+    if len(xs) == 0:
+        print(f"  skipped {name}: no positive-cost families to plot")
+        return
     pareto = _pareto_mask(xs, ys, lower_y_better=lower_y_better)
 
     fig, ax = plt.subplots()
@@ -408,7 +531,7 @@ def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
         order = np.argsort(xs[pareto])
         ax.plot(xs[pareto][order], ys[pareto][order],
                 color="0.4", linewidth=1.3, alpha=0.7, zorder=1)
-    _pareto_axes(ax, ylabel, title)
+    _pareto_axes(ax, ylabel, title, xlabel=xlabel)
     fig.tight_layout()
     _save(out_dir, name)
 
@@ -429,67 +552,107 @@ def section_tables(df: pd.DataFrame, tables_dir: Path, dataset: str):
     _table_gmm_ablation(sub, tables_dir, dataset)
 
 
-def _table_compare(sub: pd.DataFrame, tables_dir: Path, dataset: str):
-    """Best-of-each adapter rows, ACC@FAR=5% (primary) + EER (secondary)."""
-    rows = []
-    for label, where in BEST_LINES:
-        s = _filter(sub, where)
-        if s.empty:
-            continue
-        rows.append(f"    {label} & {_cell(s['m_acc_at_far5'])} & {_cell(s['m_eer'])} \\\\")
-    tex = "\n".join([
+def _table_with_ci(caption: str, label: str, tabular: str, ci_pdf: str,
+                   table_frac: float = 0.46, plot_frac: float = 0.52) -> str:
+    """A table float: the tabular (left) beside its CI plot (right).
+
+    `tabular` is the full \\begin{tabular}..\\end{tabular} block; `ci_pdf` is a
+    doc-relative path to the CI image (same convention as the chapter figures).
+    The tabular is scaled to its minipage so narrow and wide tables both fit.
+    """
+    return "\n".join([
         "\\begin{table}[htbp]",
         "  \\centering",
-        f"  \\caption{{Adaptive-layer comparison on {dataset} at"
-        f" \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI across"
-        " target classes $\\times$ trials). ACC@FAR=5\\% is the headline"
-        " metric (higher is better); EER is shown for reference (lower is"
-        " better).}",
-        f"  \\label{{tab:compare_{dataset}}}",
-        "  \\begin{tabular}{lrr}",
-        "    \\toprule",
-        "    Adaptive layer & ACC@FAR=5\\% & EER \\\\",
-        "    \\midrule",
-        "\n".join(rows),
-        "    \\bottomrule",
-        "  \\end{tabular}",
+        f"  \\caption{{{caption}}}",
+        f"  \\label{{{label}}}",
+        f"  \\begin{{minipage}}[c]{{{table_frac}\\textwidth}}",
+        "    \\centering",
+        "    \\resizebox{\\linewidth}{!}{%",
+        tabular,
+        "    }",
+        "  \\end{minipage}\\hfill",
+        f"  \\begin{{minipage}}[c]{{{plot_frac}\\textwidth}}",
+        "    \\centering",
+        f"    \\includegraphics[width=\\linewidth]{{{ci_pdf}}}",
+        "  \\end{minipage}",
         "\\end{table}",
     ])
+
+
+def _table_compare(sub: pd.DataFrame, tables_dir: Path, dataset: str):
+    """Best-of-each adapter rows, ACC@FAR=5% (primary) + EER (secondary),
+    shown beside the validation CI chart of the same train_n=50 numbers."""
+    present = [(label, _filter(sub, where)) for label, where in BEST_LINES]
+    present = [(label, s) for label, s in present if not s.empty]
+    metrics = ["m_acc_at_far5", "m_eer"]
+    best = _best_rows([s for _, s in present], metrics)
+    rows = []
+    for i, (label, s) in enumerate(present):
+        cells = " & ".join(_cell(s[m], bold=best.get(m) == i) for m in metrics)
+        rows.append(f"      {label} & {cells} \\\\")
+    tabular = "\n".join([
+        "    \\begin{tabular}{lrr}",
+        "      \\toprule",
+        "      Adaptive layer & ACC@FAR=5\\% & EER \\\\",
+        "      \\midrule",
+        "\n".join(rows),
+        "      \\bottomrule",
+        "    \\end{tabular}",
+    ])
+    caption = (f"Adaptive-layer comparison on {_pretty_dataset(dataset)} at"
+               f" \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI across"
+               " target classes $\\times$ trials). ACC@FAR=5\\% is the headline"
+               " metric (higher is better); EER is shown for reference (lower is"
+               " better). The best value in each column is in bold. The same"
+               " ACC@FAR=5\\% values are drawn as 95\\% confidence intervals at right.")
+    tex = _table_with_ci(caption, f"tab:compare_{dataset}", tabular,
+                         f"figures/{dataset}/ci_acc_at_far5.pdf")
     path = tables_dir / f"compare_{dataset}.tex"
     path.write_text(tex + "\n")
     print(f"  saved {path}")
 
 
 def _table_gmm_ablation(sub: pd.DataFrame, tables_dir: Path, dataset: str):
-    """K x covariance grid, ACC@FAR=5% mean +/- 95% CI."""
+    """K x covariance grid, ACC@FAR=5% mean +/- 95% CI, shown beside the ranked
+    K x covariance CI chart of the same train_n=50 numbers."""
     g = _filter(sub, {"p_adapter": "GMMAdapter"})
     cov_types = [c for c in ("spherical", "diag", "full")
                  if c in set(g["p_covariance_type"].unique())]
     components = sorted(int(k) for k in g["p_n_components"].unique())
+    # Best configuration in the grid (highest mean ACC@FAR=5%), bolded below.
+    best_kc, best_mean = None, -np.inf
+    for k in components:
+        for cov in cov_types:
+            s = g[(g["p_n_components"] == k) & (g["p_covariance_type"] == cov)]
+            if not s.empty and s["m_acc_at_far5"].mean() > best_mean:
+                best_mean, best_kc = s["m_acc_at_far5"].mean(), (k, cov)
     rows = []
     for k in components:
         cells = []
         for cov in cov_types:
             s = g[(g["p_n_components"] == k) & (g["p_covariance_type"] == cov)]
-            cells.append(_cell(s["m_acc_at_far5"]) if not s.empty else "--")
-        rows.append(f"    $K={k}$ & " + " & ".join(cells) + " \\\\")
-    tex = "\n".join([
-        "\\begin{table}[htbp]",
-        "  \\centering",
-        f"  \\caption{{GMM ablation on {dataset}: ACC@FAR=5\\% at"
-        f" \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI) across"
-        " the number of components $K$ and covariance type. Higher is"
-        " better.}",
-        f"  \\label{{tab:gmm_ablation_{dataset}}}",
-        f"  \\begin{{tabular}}{{l{'r' * len(cov_types)}}}",
-        "    \\toprule",
-        "    & " + " & ".join(f"\\texttt{{{c}}}" for c in cov_types) + " \\\\",
-        "    \\midrule",
+            if s.empty:
+                cells.append("--")
+            else:
+                cells.append(_cell(s["m_acc_at_far5"], bold=(k, cov) == best_kc))
+        rows.append(f"      $K={k}$ & " + " & ".join(cells) + " \\\\")
+    tabular = "\n".join([
+        f"    \\begin{{tabular}}{{l{'r' * len(cov_types)}}}",
+        "      \\toprule",
+        "      & " + " & ".join(f"\\texttt{{{c}}}" for c in cov_types) + " \\\\",
+        "      \\midrule",
         "\n".join(rows),
-        "    \\bottomrule",
-        "  \\end{tabular}",
-        "\\end{table}",
+        "      \\bottomrule",
+        "    \\end{tabular}",
     ])
+    caption = (f"GMM ablation on {_pretty_dataset(dataset)}: ACC@FAR=5\\% at"
+               f" \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI) across"
+               " the number of components $K$ and covariance type; higher is"
+               " better. The best configuration is in bold. The same values are"
+               " drawn as ranked 95\\% confidence intervals at right.")
+    tex = _table_with_ci(caption, f"tab:gmm_ablation_{dataset}", tabular,
+                         f"figures/{dataset}/gmm_cov_ci_acc_at_far5.pdf",
+                         table_frac=0.50, plot_frac=0.48)
     path = tables_dir / f"gmm_ablation_{dataset}.tex"
     path.write_text(tex + "\n")
     print(f"  saved {path}")
@@ -502,8 +665,8 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
     Emits a per-dataset summary table (`test_summary_<dataset>.tex`) and two
     figures (`test_<dataset>_acc_at_far5_ci`, `test_<dataset>_acc_at_far5_vs_train_n`)
     at the same enrollment budget (train_n=FIXED_TRAIN_N) used by the rest of the
-    exporter. The headline metric is ACC@FAR=5% (higher is better); EER and AUPRC
-    are reported in the table as supporting columns.
+    exporter. The headline metric is ACC@FAR=5% (higher is better); EER is
+    reported in the table as a supporting column.
 
     Rows are the frozen best-of-each families (BEST_LINES), so the two GMM K=1
     variants (full vs diag) stay distinct rather than collapsing on p_adapter.
@@ -516,6 +679,12 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
         return
     print(f"E. Final test ({dataset})")
     test_df = pd.read_parquet(test_parquet_path)
+    # main() refreshes only the validation sweep df; the test parquet is read
+    # here independently, so refresh its structural costs too. This is what
+    # makes the test-led enrollment Pareto below charge the same best-case
+    # single-pass GMM fit as fig:enroll_flops_bar (m_training_flops is baked
+    # at sweep time with sklearn's ~2-iteration EM otherwise).
+    test_df = _refresh_structural_costs(test_df)
 
     slice_at = test_df[test_df["p_train_n"] == FIXED_TRAIN_N]
     if slice_at.empty:
@@ -538,54 +707,50 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
     n_targets = slice_at["p_target_class"].nunique()
     n_trials = slice_at["p_trial"].nunique()
 
-    # --- Summary table (headline ACC@FAR=5% first, then EER, AUPRC) ---
-    metric_labels = {"m_acc_at_far5": "ACC@FAR=5\\%", "m_eer": "EER", "m_auprc": "AUPRC"}
+    # --- Summary table (headline ACC@FAR=5% first, then EER), shown side by side
+    #     with the CI chart of the same train_n=50 numbers (left: tabular, right:
+    #     plot). The CI pdf is emitted just below; path is doc-relative like the
+    #     chapter's other \includegraphics. ---
+    metric_labels = {"m_acc_at_far5": "ACC@FAR=5\\%", "m_eer": "EER"}
     metrics = list(metric_labels)
+    best = _best_rows([s for _, _, s in families], metrics)
     rows = []
-    for label, where, s in families:
-        cells = " & ".join(_cell(s[m]) for m in metrics)
-        rows.append(f"    {label} & {cells} \\\\")
-    tex = "\n".join([
-        "\\begin{table}[htbp]",
-        "  \\centering",
-        f"  \\caption{{Final-test metrics on the held-out {dataset} test classes"
-        f" at \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI across"
-        f" {n_targets} test classes $\\times$ {n_trials} trials). ACC@FAR=5\\% is"
-        " the headline metric (higher is better); EER and AUPRC are shown for"
-        " reference.}",
-        f"  \\label{{tab:test_summary_{dataset}}}",
-        "  \\resizebox{\\textwidth}{!}{%",
-        f"  \\begin{{tabular}}{{l{'r' * len(metrics)}}}",
-        "    \\toprule",
-        "    Adapter & " + " & ".join(metric_labels[m] for m in metrics) + " \\\\",
-        "    \\midrule",
+    for i, (label, where, s) in enumerate(families):
+        cells = " & ".join(_cell(s[m], bold=best.get(m) == i) for m in metrics)
+        rows.append(f"      {label} & {cells} \\\\")
+    ci_pdf = f"figures/{dataset}/test_{dataset}_acc_at_far5_ci.pdf"
+    tabular = "\n".join([
+        f"    \\begin{{tabular}}{{l{'r' * len(metrics)}}}",
+        "      \\toprule",
+        f"      {_pretty_dataset(dataset)} & "
+        + " & ".join(metric_labels[m] for m in metrics) + " \\\\",
+        "      \\midrule",
         "\n".join(rows),
-        "    \\bottomrule",
-        "  \\end{tabular}%",
-        "  }",
-        "\\end{table}",
+        "      \\bottomrule",
+        "    \\end{tabular}",
     ])
+    caption = (f"Final-test metrics on the held-out {_pretty_dataset(dataset)} test classes"
+               f" at \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI across"
+               f" {n_targets} test classes $\\times$ {n_trials} trials). ACC@FAR=5\\% is"
+               " the headline metric (higher is better); EER is shown for reference. The"
+               " best value in each column is in bold. The same ACC@FAR=5\\% values are"
+               " drawn as 95\\% confidence intervals at right.")
+    tex = _table_with_ci(caption, f"tab:test_summary_{dataset}", tabular, ci_pdf)
     path = tables_dir / f"test_summary_{dataset}.tex"
     path.write_text(tex + "\n")
     print(f"  saved {path}")
 
     palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2", "#937860"]
-    labels = [f[0] for f in families]
 
-    # --- Headline bar chart: ACC@FAR=5% with 95% CI ---
-    means, margins = [], []
-    for _, _, s in families:
-        mean, ci = _ci95(s["m_acc_at_far5"])
-        means.append(mean)
-        margins.append(ci)
-    fig, ax = plt.subplots()
-    ax.bar(labels, means, yerr=margins, capsize=6, color=palette[:len(families)])
-    ax.set_ylabel("ACC @ FAR=5%")
-    ax.set_title(f"Final-test ACC @ FAR=5% ({dataset}, train_n={FIXED_TRAIN_N}, 95% CI)")
-    ax.grid(axis="y", alpha=0.3)
-    plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
-    fig.tight_layout()
-    _save(out_dir, f"test_{dataset}_acc_at_far5_ci")
+    # --- Headline chart: ACC@FAR=5% with 95% CI ---
+    # Horizontal error-bar dot chart via plot_ci_bars, in the same best-first
+    # order as the summary table it sits beside (families is sorted by mean ACC).
+    ordered_lines = [(label, where) for label, where, _ in families]
+    plot_ci_bars(test_df, lines=ordered_lines, train_n=FIXED_TRAIN_N,
+                 y="m_acc_at_far5",
+                 out_path=out_dir / f"test_{dataset}_acc_at_far5_ci.pdf",
+                 title=f"{_pretty_dataset(dataset)}: ACC @ FAR=5% (train_n={FIXED_TRAIN_N}, 95% CI)",
+                 xlabel="ACC @ FAR=5% (higher is better)")
 
     # --- Headline trend: ACC@FAR=5% vs enrollment budget ---
     fig, ax = plt.subplots()
@@ -601,7 +766,8 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
                         alpha=0.15, color=color)
     ax.set_xlabel("Enrollment size (train_n)")
     ax.set_ylabel("ACC @ FAR=5%")
-    ax.set_title(f"Final-test ACC @ FAR=5% vs enrollment budget ({dataset})")
+    ax.set_title(f"Final-test ACC @ FAR=5% vs enrollment budget "
+                 f"({_pretty_dataset(dataset)})")
     ax.legend(fontsize=7)
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -622,6 +788,22 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
         ylabel="ACC @ FAR=5% (higher is better)",
         title="Pareto Frontier: ACC @ FAR=5% vs Inference FLOPs (held-out test)",
         lower_y_better=False)
+
+    # --- Headline ACC@FAR=5% enrollment Pareto (TEST accuracy vs fit cost) ---
+    # Same frozen families and accuracy, but the cost axis is the one-time
+    # enrollment (fit) FLOPs rather than per-sample inference FLOPs. The
+    # m_training_flops column was refreshed above to the best-case single-pass
+    # GMM fit, so this frontier agrees with fig:enroll_flops_bar and the
+    # resource table. The kNN family has zero enrollment FLOPs and is dropped
+    # from the log-scaled cost axis (logged by _pareto_families_figure).
+    enroll_x = [float(s["m_training_flops"].iloc[0]) for _, _, s in families]
+    _pareto_families_figure(
+        pareto_labels, enroll_x, pareto_y, out_dir,
+        name="pareto_acc_at_far5_enroll",
+        ylabel="ACC @ FAR=5% (higher is better)",
+        title="Pareto Frontier: ACC @ FAR=5% vs Enrollment FLOPs (held-out test)",
+        lower_y_better=False,
+        xlabel="Enrollment FLOPs (one-time)")
 
     # --- Paired GMM-vs-AE significance on the headline metric ---
     gmm_where = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}
