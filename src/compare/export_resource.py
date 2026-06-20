@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from . import colors
 from .adapters import (
     GMMAdapter,
     KNNAdapter,
@@ -151,7 +152,7 @@ def fig_bar(D: int, train_n: int, out_dir: Path):
     flops = [costs[label][0] for label in labels]
 
     fig, ax = plt.subplots()
-    bars = ax.bar(labels, flops)
+    bars = ax.bar(labels, flops, color=[colors.color_for_label(l) for l in labels])
     ax.bar_label(bars, fmt="%.0f")
     ax.set_ylabel("Inference FLOPs")
     ax.set_title(f"Inference cost per sample (train_n={train_n})")
@@ -180,7 +181,7 @@ def fig_enroll_bar(D: int, train_n: int, out_dir: Path):
     bar_labels = [f"{v:,}" for v in enroll]
 
     fig, ax = plt.subplots()
-    bars = ax.bar(labels, heights)
+    bars = ax.bar(labels, heights, color=[colors.color_for_label(l) for l in labels])
     ax.set_yscale("log")
     ax.set_ylim(bottom=floor)
     ax.bar_label(bars, labels=bar_labels)
@@ -205,7 +206,7 @@ def fig_vs_train_n(D: int, ns: list[int], out_dir: Path):
 
     fig, ax = plt.subplots()
     for label in labels:
-        ax.plot(ns, series[label], label=label)
+        ax.plot(ns, series[label], label=label, color=colors.color_for_label(label))
     ax.set_xlabel("Enrollment size (train_n)")
     ax.set_ylabel("Inference FLOPs per sample")
     ax.set_title("Inference cost vs enrollment size")

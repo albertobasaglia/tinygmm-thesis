@@ -39,7 +39,9 @@ from .adapters import (
     PrototypeAdapter,
     SmallAEAdapter,
 )
+from . import colors
 from .configs.frozen import best_lines
+from .export_bench import _LINE as _BENCH_LINE
 from .plots import _filter, plot_lines, plot_gmm_grid, plot_ci_bars
 
 ROOT = Path(__file__).parent.parent.parent
@@ -283,10 +285,16 @@ def _best_rows(slices: list[pd.Series], metrics: list[str]) -> dict[str, int]:
 def section_hyperparam(df: pd.DataFrame, out_dir: Path):
     print("A. Hyperparameter selection")
 
+    # The nine GMM K x covariance lines appear only in their own ablation
+    # figures, so they use the order-stable ablation palette rather than the
+    # comparison-family identity colors (which would collapse the three K per
+    # covariance onto one color).
+    gmm_cov_colors = colors.cycle(len(GMM_COV_LINES))
+
     # EER versions (supporting / appendix material).
     plot_lines(df, x="p_train_n", y="m_eer", lines=GMM_COV_LINES,
                out_path=out_dir / "gmm_cov_eer.pdf",
-               title="GMM: EER by covariance type")
+               title="GMM: EER by covariance type", line_colors=gmm_cov_colors)
     print("  saved gmm_cov_eer.pdf")
 
     plot_gmm_grid(df, train_n=FIXED_TRAIN_N, y="m_eer",
@@ -296,14 +304,14 @@ def section_hyperparam(df: pd.DataFrame, out_dir: Path):
     plot_ci_bars(df, lines=GMM_COV_LINES, train_n=FIXED_TRAIN_N, y="m_eer",
                  out_path=out_dir / "gmm_cov_ci_eer.pdf",
                  title=f"GMM variants: EER with 95% CI (train_n={FIXED_TRAIN_N})",
-                 xlabel="EER (lower is better)")
+                 xlabel="EER (lower is better)", line_colors=gmm_cov_colors)
     print("  saved gmm_cov_ci_eer.pdf")
 
     # ACC@FAR=5% versions (headline metric).
     plot_lines(df, x="p_train_n", y="m_acc_at_far5", lines=GMM_COV_LINES,
                out_path=out_dir / "gmm_cov_acc_at_far5.pdf",
                title="GMM: ACC @ FAR=5% by covariance type",
-               ylabel="ACC @ FAR=5%")
+               ylabel="ACC @ FAR=5%", line_colors=gmm_cov_colors)
     print("  saved gmm_cov_acc_at_far5.pdf")
 
     plot_gmm_grid(df, train_n=FIXED_TRAIN_N, y="m_acc_at_far5",
@@ -313,7 +321,7 @@ def section_hyperparam(df: pd.DataFrame, out_dir: Path):
     plot_ci_bars(df, lines=GMM_COV_LINES, train_n=FIXED_TRAIN_N, y="m_acc_at_far5",
                  out_path=out_dir / "gmm_cov_ci_acc_at_far5.pdf",
                  title=f"GMM variants: ACC @ FAR=5% with 95% CI (train_n={FIXED_TRAIN_N})",
-                 xlabel="ACC @ FAR=5% (higher is better)")
+                 xlabel="ACC @ FAR=5% (higher is better)", line_colors=gmm_cov_colors)
     print("  saved gmm_cov_ci_acc_at_far5.pdf")
 
     knn_sub = _filter(df, {"p_adapter": "KNNAdapter"})
@@ -339,7 +347,7 @@ def section_hyperparam(df: pd.DataFrame, out_dir: Path):
         plot_lines(df, x="p_train_n", y="m_acc_at_far5", lines=AE_LINES,
                    out_path=out_dir / "ae_acc_at_far5.pdf",
                    title="AE: ACC @ FAR=5% by latent dim",
-                   ylabel="ACC @ FAR=5%")
+                   ylabel="ACC @ FAR=5%", line_colors=colors.cycle(len(AE_LINES)))
         print("  saved ae_acc_at_far5.pdf")
 
 
@@ -469,7 +477,7 @@ def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
         xs, ys = xs[positive], ys[positive]
         if len(xs) == 0:
             continue
-        color = ax._get_lines.get_next_color()
+        color = colors.color_for(where)
         ax.scatter(xs, ys, alpha=0.4, s=10, color=color)
         pareto = _pareto_mask(xs, ys, lower_y_better=lower_y_better)
         if pareto.any():
@@ -485,13 +493,75 @@ def _pareto_figure(df: pd.DataFrame, out_dir: Path, name: str, y: str,
     _save(out_dir, name)
 
 
-def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
+def _load_bench_times(bench_path: Path) -> list[dict]:
+    """Parse the on-device benchmark log into per-config measured µs.
+
+    Reuses export_bench's line regex. Returns a list of dicts keyed
+    name/D/L/K/cov/N/k/us, or an empty list when the log is missing — in
+    which case the time-on-device Pareto is simply skipped.
+    """
+    if not bench_path.exists():
+        return []
+    rows = []
+    for line in bench_path.read_text().splitlines():
+        m = _BENCH_LINE.search(line)
+        if m is None:
+            continue
+        g = m.groupdict()
+        rows.append({
+            "name": g["name"],
+            "D": int(g["D"]),
+            "L": int(g["L"]) if g["L"] else None,
+            "K": int(g["K"]) if g["K"] else None,
+            "cov": g["cov"],
+            "N": int(g["N"]) if g["N"] else None,
+            "k": int(g["k"]) if g["k"] else None,
+            "us": float(g["us"]),
+        })
+    return rows
+
+
+def _family_bench_us(where: dict, D: int, train_n: int,
+                     bench_rows: list[dict]) -> float | None:
+    """Measured µs/inference for one frozen family at embedding dim D.
+
+    Maps the family's defining hyperparameters to the matching benchmark
+    config. The kNN store size equals the enrollment budget, so its measured
+    time is looked up at N=train_n. Returns None when no benchmark row matches
+    (e.g. a train_n the firmware sweep did not cover)."""
+    adapter = where["p_adapter"]
+
+    def find(pred):
+        for r in bench_rows:
+            if r["D"] == D and pred(r):
+                return r["us"]
+        return None
+
+    if adapter == "GMMAdapter":
+        K, cov = where["p_n_components"], where["p_covariance_type"]
+        return find(lambda r: r["name"] == "gmm" and r["K"] == K and r["cov"] == cov)
+    if adapter == "SmallAEAdapter":
+        L = where["p_latent_dim"]
+        return find(lambda r: r["name"] == "small_ae" and r["L"] == L)
+    if adapter == "KNNAdapter":
+        k = where["p_k"]
+        return find(lambda r: r["name"] == "knn" and r["k"] == k and r["N"] == train_n)
+    if adapter == "CosineAdapter":
+        return find(lambda r: r["name"] == "cosine")
+    if adapter == "PrototypeAdapter":
+        return find(lambda r: r["name"] == "prototype")
+    return None
+
+
+def _pareto_families_figure(labels, xs, ys, point_colors, out_dir: Path, name: str,
                             ylabel: str, title: str, lower_y_better: bool,
                             xlabel: str = "Inference FLOPs"):
     """Pareto scatter for one point per frozen family (label, cost, accuracy).
 
     Used for the headline ACC@FAR=5% frontier built from the held-out TEST
     accuracy of the six selected configs (one (cost, accuracy) point each).
+    point_colors is one identity color per family (same order as labels), from
+    the central scheme, so each family keeps its color across every figure.
     The cost is either inference or enrollment FLOPs; xlabel names which.
     Pareto-optimal points are highlighted and connected; dominated points are
     drawn faint. x (cost) is always minimized; y maximized for ACC@FAR=5%.
@@ -503,6 +573,7 @@ def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
     xs = np.asarray(xs, dtype=float)
     ys = np.asarray(ys, dtype=float)
     labels = list(labels)
+    point_colors = list(point_colors)
     positive = xs > 0
     n_dropped = int((~positive).sum())
     if n_dropped:
@@ -510,6 +581,7 @@ def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
         print(f"  note: dropped {n_dropped} family/families with non-positive "
               f"cost from {name} (log x-axis): {dropped}")
         labels = [labels[i] for i in range(len(labels)) if positive[i]]
+        point_colors = [point_colors[i] for i in range(len(point_colors)) if positive[i]]
         xs, ys = xs[positive], ys[positive]
     if len(xs) == 0:
         print(f"  skipped {name}: no positive-cost families to plot")
@@ -517,9 +589,8 @@ def _pareto_families_figure(labels, xs, ys, out_dir: Path, name: str,
     pareto = _pareto_mask(xs, ys, lower_y_better=lower_y_better)
 
     fig, ax = plt.subplots()
-    palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2", "#937860"]
     for i, label in enumerate(labels):
-        color = palette[i % len(palette)]
+        color = point_colors[i]
         on = bool(pareto[i])
         ax.scatter(xs[i], ys[i], s=45 if on else 22,
                    color=color, alpha=1.0 if on else 0.45,
@@ -740,7 +811,10 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
     path.write_text(tex + "\n")
     print(f"  saved {path}")
 
-    palette = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2", "#937860"]
+    # One identity color per frozen family (same order as `families`), from the
+    # central scheme, so each family keeps its color across the CI chart, the
+    # train_n trend, and all three Pareto frontiers below.
+    family_colors = [colors.color_for(where) for _, where, _ in families]
 
     # --- Headline chart: ACC@FAR=5% with 95% CI ---
     # Horizontal error-bar dot chart via plot_ci_bars, in the same best-first
@@ -754,7 +828,7 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
 
     # --- Headline trend: ACC@FAR=5% vs enrollment budget ---
     fig, ax = plt.subplots()
-    for (label, where, _), color in zip(families, palette):
+    for (label, where, _), color in zip(families, family_colors):
         sub = _filter(test_df, where)
         agg_tn = (sub.groupby("p_train_n")["m_acc_at_far5"]
                   .agg(["mean", "std", "count"]).reset_index().sort_values("p_train_n"))
@@ -783,7 +857,7 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
         pareto_x.append(float(s["m_inference_flops"].iloc[0]))
         pareto_y.append(float(s["m_acc_at_far5"].mean()))
     _pareto_families_figure(
-        pareto_labels, pareto_x, pareto_y, out_dir,
+        pareto_labels, pareto_x, pareto_y, family_colors, out_dir,
         name="pareto_acc_at_far5",
         ylabel="ACC @ FAR=5% (higher is better)",
         title="Pareto Frontier: ACC @ FAR=5% vs Inference FLOPs (held-out test)",
@@ -798,12 +872,44 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
     # from the log-scaled cost axis (logged by _pareto_families_figure).
     enroll_x = [float(s["m_training_flops"].iloc[0]) for _, _, s in families]
     _pareto_families_figure(
-        pareto_labels, enroll_x, pareto_y, out_dir,
+        pareto_labels, enroll_x, pareto_y, family_colors, out_dir,
         name="pareto_acc_at_far5_enroll",
         ylabel="ACC @ FAR=5% (higher is better)",
         title="Pareto Frontier: ACC @ FAR=5% vs Enrollment FLOPs (held-out test)",
         lower_y_better=False,
         xlabel="Enrollment FLOPs (one-time)")
+
+    # --- Headline ACC@FAR=5% Pareto (TEST accuracy vs measured on-device time) ---
+    # Same frozen families and held-out accuracy, but the cost axis is the
+    # actual per-inference time measured on the ESP32-S3 (firmware/bench),
+    # rather than the analytical FLOP count. kNN's store size equals the
+    # enrollment budget, so its time is read at N=FIXED_TRAIN_N. Families with
+    # no matching benchmark row are dropped (logged).
+    bench_rows = _load_bench_times(ROOT / "firmware" / "bench" / "output.txt")
+    if not bench_rows:
+        print("  note: firmware/bench/output.txt not found; skipped time Pareto")
+    else:
+        D = int(slice_at["p_embedding_dim"].iloc[0])
+        t_labels, t_x, t_y, t_colors, missing = [], [], [], [], []
+        for (label, where, s), color in zip(families, family_colors):
+            us = _family_bench_us(where, D, FIXED_TRAIN_N, bench_rows)
+            if us is None:
+                missing.append(label)
+                continue
+            t_labels.append(label)
+            t_x.append(us)
+            t_y.append(float(s["m_acc_at_far5"].mean()))
+            t_colors.append(color)
+        if missing:
+            print(f"  note: no benchmark time for {missing}; omitted from time Pareto")
+        if t_x:
+            _pareto_families_figure(
+                t_labels, t_x, t_y, t_colors, out_dir,
+                name="pareto_acc_at_far5_time",
+                ylabel="ACC @ FAR=5% (higher is better)",
+                title="Pareto Frontier: ACC @ FAR=5% vs On-Device Time (held-out test)",
+                lower_y_better=False,
+                xlabel="Measured time per inference [µs]")
 
     # --- Paired GMM-vs-AE significance on the headline metric ---
     gmm_where = {"p_adapter": "GMMAdapter", "p_n_components": 1, "p_covariance_type": "diag"}

@@ -34,7 +34,14 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from .adapters import GMMAdapter, KNNAdapter, SmallAEAdapter
+from . import colors
+from .adapters import (
+    CosineAdapter,
+    GMMAdapter,
+    KNNAdapter,
+    PrototypeAdapter,
+    SmallAEAdapter,
+)
 
 ROOT = Path(__file__).parent.parent.parent
 
@@ -86,6 +93,12 @@ def _inference_flops(cfg: dict) -> int:
             a = SmallAEAdapter(input_dim=D, latent_dim=cfg["L"], epochs=1,
                                train_n=20, seed=0)
             a.fit(rng.standard_normal((20, D)).astype(np.float32))
+        elif cfg["name"] == "prototype":
+            a = PrototypeAdapter(train_n=50)
+            a.fit(rng.standard_normal((50, D)).astype(np.float32))
+        elif cfg["name"] == "cosine":
+            a = CosineAdapter(train_n=50)
+            a.fit(rng.standard_normal((50, D)).astype(np.float32))
         else:
             raise ValueError(f"unknown benchmark adapter {cfg['name']!r}")
     return a.inference_flops()
@@ -120,6 +133,10 @@ def _family(cfg: dict) -> str:
         return f"GMM {cfg['cov']}"
     if cfg["name"] == "knn":
         return f"kNN k={cfg['k']}"
+    if cfg["name"] == "prototype":
+        return "Prototype"
+    if cfg["name"] == "cosine":
+        return "Cosine"
     return "AE"
 
 
@@ -128,6 +145,10 @@ def _label(cfg: dict) -> str:
         return f"GMM K={cfg['K']} {cfg['cov']}"
     if cfg["name"] == "knn":
         return f"kNN N={cfg['N']} k={cfg['k']}"
+    if cfg["name"] == "prototype":
+        return "Prototype"
+    if cfg["name"] == "cosine":
+        return "Cosine"
     return f"AE L={cfg['L']}"
 
 
@@ -141,18 +162,19 @@ def fig_us_vs_flops(rows: list[dict], out_dir: Path, fname: str):
     markers = {16: "o", 32: "s"}
     for fam, frows in families.items():
         frows = sorted(frows, key=lambda r: r["flops"])
-        color = None
+        # Identity color for the family (shared with every other figure); the
+        # family name already encodes covariance for GMM ("GMM diag"/"GMM full").
+        color = colors.color_for_label(fam)
         for D in dims:
             drows = [r for r in frows if r["D"] == D]
             if not drows:
                 continue
-            line, = ax.plot(
+            ax.plot(
                 [r["flops"] for r in drows], [r["us"] for r in drows],
                 marker=markers[D], linestyle="--", linewidth=0.8,
                 color=color, markerfacecolor="none" if D == 32 else None,
                 label=fam if D == dims[0] else None,
             )
-            color = line.get_color()
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Analytical inference FLOPs")
@@ -191,7 +213,13 @@ def write_table(rows: list[dict], tables_dir: Path, fname: str,
         f"  \\label{{{label}}}",
         "  \\begin{tabular}{lrrrr}",
         "    \\toprule",
-        "    Configuration & $D$ & FLOPs & Measured [µs] & ns/FLOP \\\\",
+        # Units go in plain bracketed text with a literal "µ" rather than
+        # siunitx (\si{\micro\second}): this table is shared between the DTU and
+        # UniPD builds, and UniPD's DEIthesis.cls does not load siunitx, so
+        # \si{...} would break that build. Both builds use xelatex, which reads
+        # the source as UTF-8, so the literal "µ" renders correctly in both.
+        "    Configuration & $D$ & Inference FLOPs & "
+        "Time per inference [µs] & Time per FLOP [ns] \\\\",
         "    \\midrule",
         "\n".join(body),
         "    \\bottomrule",

@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "small_ae.c" "gmm.c" "knn.c"
+    SRCS "main.c" "small_ae.c" "gmm.c" "knn.c" "prototype.c" "cosine.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_hw_support esp_timer
 )

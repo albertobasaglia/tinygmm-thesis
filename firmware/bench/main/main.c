@@ -11,6 +11,8 @@
 #include "small_ae.h"
 #include "gmm.h"
 #include "knn.h"
+#include "prototype.h"
+#include "cosine.h"
 
 static volatile float sink;
 
@@ -184,9 +186,11 @@ static void clock_diagnostics(void)
 }
 
 /* -- Typed wrappers so we can pass a uniform score_fn. -- */
-static float wrap_ae(void *ctx, const float *x)  { return small_ae_score(ctx, x); }
-static float wrap_gmm(void *ctx, const float *x) { return gmm_score(ctx, x); }
-static float wrap_knn(void *ctx, const float *x) { return knn_score(ctx, x); }
+static float wrap_ae(void *ctx, const float *x)     { return small_ae_score(ctx, x); }
+static float wrap_gmm(void *ctx, const float *x)    { return gmm_score(ctx, x); }
+static float wrap_knn(void *ctx, const float *x)    { return knn_score(ctx, x); }
+static float wrap_proto(void *ctx, const float *x)  { return proto_score(ctx, x); }
+static float wrap_cosine(void *ctx, const float *x) { return cosine_score(ctx, x); }
 
 /* ---- Configuration tables (edit here to change the sweep) ---- */
 
@@ -270,6 +274,32 @@ void app_main(void)
                 knn_free(&ctx);
             }
         }
+    }
+
+    /* --- Prototype (single mean, Euclidean distance) --- */
+    for (int di = 0; di < N_DIMS; di++) {
+        int D = DIMS[di];
+        srand(BENCH_SEED);
+        proto_ctx_t ctx;
+        proto_init(&ctx, D);
+        fill_rand(query, D);
+        char tag[64];
+        snprintf(tag, sizeof(tag), "prototype D=%d", D);
+        bench(tag, &ctx, wrap_proto, query, D);
+        proto_free(&ctx);
+    }
+
+    /* --- Cosine (single mean, 1 - cosine similarity) --- */
+    for (int di = 0; di < N_DIMS; di++) {
+        int D = DIMS[di];
+        srand(BENCH_SEED);
+        cosine_ctx_t ctx;
+        cosine_init(&ctx, D);
+        fill_rand(query, D);
+        char tag[64];
+        snprintf(tag, sizeof(tag), "cosine D=%d", D);
+        bench(tag, &ctx, wrap_cosine, query, D);
+        cosine_free(&ctx);
     }
 
     /* Pacing chosen so each line clears the UART (~7 ms at 115200 baud

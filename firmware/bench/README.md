@@ -23,13 +23,15 @@ eliminate the call and so runs can be diffed for numerical regressions.
 
 ## What is measured
 
-Three adapters, all operating on a random query embedding:
+Five adapters, all operating on a random query embedding:
 
 | Adapter   | Source             | Score function                               |
 |-----------|--------------------|----------------------------------------------|
 | small_ae  | [main/small_ae.c](main/small_ae.c) | MSE between input and MLP reconstruction     |
 | gmm       | [main/gmm.c](main/gmm.c)           | Negative log-likelihood (sph / diag / full)  |
 | knn       | [main/knn.c](main/knn.c)           | Squared distance to k-th nearest stored point |
+| prototype | [main/prototype.c](main/prototype.c) | Euclidean distance to single enrollment mean |
+| cosine    | [main/cosine.c](main/cosine.c)     | 1 − cosine similarity to single enrollment mean |
 
 Weights, means, precisions, and the k-NN store are filled with a deterministic
 PRNG (`srand(BENCH_SEED)` before each `_init`). **Accuracy is not evaluated

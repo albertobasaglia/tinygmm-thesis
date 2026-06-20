@@ -3,6 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 
+from . import colors
+
 
 def _filter(df: pd.DataFrame, where: dict) -> pd.DataFrame:
     subset = df.copy()
@@ -36,11 +38,18 @@ def _save(fig, out_path):
 
 def plot_lines(df: pd.DataFrame, x: str, y: str,
                lines: list[tuple[str, dict]], out_path,
-               title: str | None = None, ylabel: str | None = None):
-    """One line per (label, filter_dict), mean + 95% CI band. Saves PDF."""
+               title: str | None = None, ylabel: str | None = None,
+               line_colors: list | None = None):
+    """One line per (label, filter_dict), mean + 95% CI band. Saves PDF.
+
+    Colors come from the central scheme (colors.color_for) so an algorithm keeps
+    its color across figures. Pass line_colors (one per line, same order) only
+    for within-figure ablations whose series are not the comparison families.
+    """
     fig, ax = plt.subplots()
-    for label, where in lines:
-        _plot_line(ax, _filter(df, where), x, y, label)
+    for i, (label, where) in enumerate(lines):
+        color = line_colors[i] if line_colors is not None else colors.color_for(where)
+        _plot_line(ax, _filter(df, where), x, y, label, color=color)
     ax.set_xlabel(x)
     ax.set_ylabel(ylabel or y)
     ax.set_title(title or f"{y} vs {x}")
@@ -51,8 +60,13 @@ def plot_lines(df: pd.DataFrame, x: str, y: str,
 
 def plot_ci_bars(df: pd.DataFrame, lines: list[tuple[str, dict]],
                  train_n: int, y: str, out_path,
-                 title: str | None = None, xlabel: str | None = None):
-    """Horizontal error-bar chart: one row per (label, filter_dict), mean +/- 95% CI."""
+                 title: str | None = None, xlabel: str | None = None,
+                 line_colors: list | None = None):
+    """Horizontal error-bar chart: one row per (label, filter_dict), mean +/- 95% CI.
+
+    Colors come from the central scheme (colors.color_for); pass line_colors only
+    for within-figure ablations (see plot_lines).
+    """
     sub = df[df["p_train_n"] == train_n]
     fig, ax = plt.subplots()
     for i, (label, where) in enumerate(lines):
@@ -64,7 +78,8 @@ def plot_ci_bars(df: pd.DataFrame, lines: list[tuple[str, dict]],
         sem = vals.std(ddof=1) / np.sqrt(n)
         t_crit = stats.t.ppf(0.975, df=n - 1)
         ci = t_crit * sem
-        ax.errorbar(mean, i, xerr=ci, fmt="o", capsize=5, markersize=6)
+        color = line_colors[i] if line_colors is not None else colors.color_for(where)
+        ax.errorbar(mean, i, xerr=ci, fmt="o", capsize=5, markersize=6, color=color)
         ax.text(mean + ci + 0.005, i, f"{mean:.3f}", va="center", fontsize=9)
 
     ax.set_yticks(range(len(lines)))
@@ -98,7 +113,8 @@ def plot_gmm_grid(df: pd.DataFrame, train_n: int, out_path,
             means.append(vals.mean())
             stds.append(vals.std())
         offset = (i - len(cov_types) / 2 + 0.5) * width
-        ax.bar(x + offset, means, width, yerr=stds, capsize=3, label=cov)
+        ax.bar(x + offset, means, width, yerr=stds, capsize=3, label=cov,
+               color=colors.COV.get(cov, colors.FALLBACK))
 
     ax.set_xticks(x)
     ax.set_xticklabels([f"K={k}" for k in components])

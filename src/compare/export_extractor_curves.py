@@ -19,6 +19,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from . import colors
+
 ROOT = Path(__file__).parent.parent.parent
 
 # Match the thesis figure style used by export_plots.py.
@@ -55,8 +57,8 @@ def _per_epoch(log_dir: Path) -> pd.DataFrame:
 def _plot_one(epochs, train, val, ylabel: str, out_path: Path, ylim=None):
     """One single-panel figure (train + validation of a single metric)."""
     fig, ax = plt.subplots(figsize=(FULL_W, 3.0))
-    ax.plot(epochs, train, label="train", color="#4C72B0")
-    ax.plot(epochs, val, label="validation", color="#DD8452")
+    ax.plot(epochs, train, label="train", color=colors.LEARNING_CURVE["train"])
+    ax.plot(epochs, val, label="validation", color=colors.LEARNING_CURVE["val"])
     ax.set_xlabel("Epoch")
     ax.set_ylabel(ylabel)
     if ylim is not None:
