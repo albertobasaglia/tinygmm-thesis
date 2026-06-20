@@ -25,7 +25,7 @@ from ..adapters import (
 FROZEN_BEST = [
     ("GMM K=1 full", GMMAdapter,       {"n_components": 1, "covariance_type": "full"}),
     ("GMM K=1 diag", GMMAdapter,       {"n_components": 1, "covariance_type": "diag"}),
-    ("kNN k=5",      KNNAdapter,       {"k": 5}),
+    ("kNN k=1",      KNNAdapter,       {"k": 1}),
     ("AE",           SmallAEAdapter,   {"latent_dim": 8, "epochs": 100}),
     ("Cosine",       CosineAdapter,    {}),
     ("Prototype",    PrototypeAdapter, {}),

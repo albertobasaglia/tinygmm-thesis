@@ -210,7 +210,7 @@ static const char *COV_NAMES[]    = {"spherical",    "diag",    "full"};
 static const int KNN_NS[] = {10, 50, 100};
 #define N_KNN_N (sizeof(KNN_NS) / sizeof(KNN_NS[0]))
 
-static const int KNN_KS[] = {5};
+static const int KNN_KS[] = {1};
 #define N_KNN_K (sizeof(KNN_KS) / sizeof(KNN_KS[0]))
 
 void app_main(void)
