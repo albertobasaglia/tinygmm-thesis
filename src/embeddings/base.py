@@ -31,3 +31,22 @@ class EmbeddingProvider(ABC):
             test_target:  (test_n, embedding_dim) held-out target-class embeddings.
             test_other:   (test_n, embedding_dim) non-target embeddings.
         """
+
+    def standardize(
+        self, fit_on: np.ndarray, *arrays: np.ndarray
+    ) -> tuple[np.ndarray, ...]:
+        """Standardize arrays using statistics estimated from `fit_on` only.
+
+        `fit_on` is the budgeted enrollment subset the adapter will actually
+        be fitted on, so any scaler must be estimated from it (and applied to
+        the evaluation arrays) to honor the few-shot enrollment budget — never
+        from the full pool.
+
+        The default is the identity transform: providers whose features are
+        already on a common scale (e.g. instance-normalized neural embeddings)
+        do not override it. Providers over raw heterogeneous features override
+        this to fit a scaler on the enrollment subset.
+
+        Returns (fit_on, *arrays), each transformed.
+        """
+        return (fit_on, *arrays)

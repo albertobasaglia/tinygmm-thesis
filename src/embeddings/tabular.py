@@ -100,10 +100,23 @@ class TabularEmbeddingProvider(EmbeddingProvider):
         test_target = self._target_df.iloc[test_idx].to_numpy(dtype=np.float32)
         test_other = self._other_df.iloc[other_idx].to_numpy(dtype=np.float32)
 
-        if self.scale:
-            scaler = StandardScaler().fit(train_target)
-            train_target = scaler.transform(train_target).astype(np.float32)
-            test_target = scaler.transform(test_target).astype(np.float32)
-            test_other = scaler.transform(test_other).astype(np.float32)
-
+        # Returned raw; standardization is applied per-budget in standardize()
+        # so the scaler is fit only on the enrollment subset actually used.
         return train_target, test_target, test_other
+
+    def standardize(
+        self, fit_on: np.ndarray, *arrays: np.ndarray
+    ) -> tuple[np.ndarray, ...]:
+        """Fit a StandardScaler on the budgeted enrollment subset only.
+
+        Fitting on `fit_on` (the few-shot enrollment vectors the adapter will
+        be trained on) rather than the full target pool keeps the standardizer
+        within the enrollment budget. No information about the non-target pool
+        or the evaluation set enters the scaler.
+        """
+        if not self.scale:
+            return (fit_on, *arrays)
+        scaler = StandardScaler().fit(fit_on)
+        return tuple(
+            scaler.transform(a).astype(np.float32) for a in (fit_on, *arrays)
+        )

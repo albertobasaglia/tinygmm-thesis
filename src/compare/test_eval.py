@@ -185,6 +185,11 @@ def main():
             shuffled_emb = rng.permutation(train_emb)
 
             for train_n in TRAIN_N_VALUES:
+                # Fit the standardizer on the budgeted enrollment subset only,
+                # then apply it to the evaluation arrays.
+                enroll, test_target_s, test_other_s = provider.standardize(
+                    shuffled_emb[:train_n], test_target, test_other
+                )
                 for name, cls, base_kwargs in CONFIGS:
                     kwargs = {**base_kwargs, "train_n": train_n}
                     p_row = {
@@ -204,13 +209,13 @@ def main():
                         adapter_kwargs["seed"] = trial
                     adapter = cls(**adapter_kwargs)
                     try:
-                        adapter.fit(shuffled_emb)
+                        adapter.fit(enroll)
                     except SkipConfig as e:
                         log.warning("Skipping config '%s': %s", name, e)
                         continue
                     rows.append({
                         **p_row,
-                        **evaluate(adapter, test_target, test_other),
+                        **evaluate(adapter, test_target_s, test_other_s),
                     })
 
     log.info("All experiments completed in %.1fs", time.perf_counter() - total_t0)

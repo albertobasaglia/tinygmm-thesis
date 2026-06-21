@@ -318,6 +318,10 @@ def main():
                 trial_t0 = time.perf_counter()
                 rng = np.random.default_rng(seed=trial)
                 shuffled_emb = rng.permutation(train_emb)
+                # Standardization depends only on (trial, train_n); cache the
+                # scaled (enroll, test_target, test_other) per budget so
+                # configs sharing a train_n reuse one scaler fit.
+                scaled_cache: dict = {}
 
                 for name, cls, kwargs in configs:
                     try:
@@ -348,15 +352,26 @@ def main():
                         adapter_kwargs = dict(kwargs)
                         if "seed" in inspect.signature(cls.__init__).parameters:
                             adapter_kwargs["seed"] = trial
+                        budget = kwargs.get("train_n")
+                        if budget not in scaled_cache:
+                            enroll_raw = (
+                                shuffled_emb[:budget] if budget is not None
+                                else shuffled_emb
+                            )
+                            scaled_cache[budget] = provider.standardize(
+                                enroll_raw, test_target, test_other
+                            )
+                        enroll, tt, to = scaled_cache[budget]
+
                         adapter = cls(**adapter_kwargs)
                         try:
-                            adapter.fit(shuffled_emb)
+                            adapter.fit(enroll)
                         except SkipConfig as e:
                             log.warning("Skipping config '%s': %s", name, e)
                             continue
                         rows.append({
                             **p_row,
-                            **evaluate(adapter, test_target, test_other),
+                            **evaluate(adapter, tt, to),
                         })
 
                         config_t1 = time.perf_counter()
