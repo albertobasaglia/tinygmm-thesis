@@ -117,7 +117,7 @@ def write_table(D: int, train_n: int, tables_dir: Path):
         infer, params, enroll = costs[label]
         rows.append(f"    {label} & {_grp(infer)} & {_grp(enroll)} & {_grp(params)} \\\\")
     tex = "\n".join([
-        "\\begin{table}[htbp]",
+        "\\begin{table}[tbp]",
         "  \\centering",
         f"  \\caption{{Resource cost per adaptive layer at \\texttt{{train\\_n}}={train_n}:"
         " per-sample inference FLOPs, one-time enrollment (fit) FLOPs, and stored"
@@ -154,6 +154,8 @@ def fig_bar(D: int, train_n: int, out_dir: Path):
     fig, ax = plt.subplots()
     bars = ax.bar(labels, flops, color=[colors.color_for_label(l) for l in labels])
     ax.bar_label(bars, fmt="%.0f")
+    # Headroom above the tallest bar so its value label clears the title.
+    ax.set_ylim(top=max(flops) * 1.15)
     ax.set_ylabel("Inference FLOPs")
     ax.set_title(f"Inference cost per sample (train_n={train_n})")
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")

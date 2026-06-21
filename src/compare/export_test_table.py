@@ -68,7 +68,7 @@ def main():
 
     ncol = len(datasets)
     tex = "\n".join([
-        "\\begin{table}[htbp]",
+        "\\begin{table}[tbp]",
         "  \\centering",
         "  \\caption{Held-out test \\texttt{ACC@FAR=5\\%} at \\texttt{train\\_n}="
         f"{FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI), per dataset; higher is better. The"

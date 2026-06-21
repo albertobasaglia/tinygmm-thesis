@@ -207,7 +207,7 @@ def write_table(rows: list[dict], tables_dir: Path, fname: str,
             f"{r['us']:.2f} & {ns_per_flop:.1f} \\\\"
         )
     tex = "\n".join([
-        "\\begin{table}[htbp]",
+        "\\begin{table}[tbp]",
         "  \\centering",
         f"  \\caption{{{caption}}}",
         f"  \\label{{{label}}}",

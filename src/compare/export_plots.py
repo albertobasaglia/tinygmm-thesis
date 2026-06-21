@@ -632,7 +632,7 @@ def _table_with_ci(caption: str, label: str, tabular: str, ci_pdf: str,
     The tabular is scaled to its minipage so narrow and wide tables both fit.
     """
     return "\n".join([
-        "\\begin{table}[htbp]",
+        "\\begin{table}[tbp]",
         "  \\centering",
         f"  \\caption{{{caption}}}",
         f"  \\label{{{label}}}",

@@ -42,7 +42,7 @@ def _load(dataset: str) -> pd.DataFrame:
 def _table(caption: str, label: str, header: str, rows: list[str]) -> str:
     ncols = len(DATASETS)
     return "\n".join([
-        "\\begin{table}[htbp]",
+        "\\begin{table}[tbp]",
         "  \\centering",
         f"  \\caption{{{caption}}}",
         f"  \\label{{{label}}}",
