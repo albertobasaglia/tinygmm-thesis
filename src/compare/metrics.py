@@ -52,8 +52,6 @@ def evaluate(adapter: Adapter, target_emb: np.ndarray, other_emb: np.ndarray) ->
         "m_threshold_at_far5": threshold_at_far5,
         "m_avg_ll": getattr(adapter, "avg_log_likelihood", None),
         "m_n_iter": getattr(getattr(adapter, "_gmm", None), "n_iter_", None),
-        "m_inference_macs": adapter.inference_macs(),
-        "m_training_macs": adapter.training_macs(),
         "m_inference_flops": adapter.inference_flops(),
         "m_training_flops": adapter.training_flops(),
         "m_parameters": adapter.parameters(),

@@ -63,14 +63,6 @@ class Adapter(ABC):
         """Return per-sample anomaly score (higher = more anomalous)."""
 
     @abstractmethod
-    def inference_macs(self) -> int:
-        """MACs to score a single sample."""
-
-    @abstractmethod
-    def training_macs(self) -> int:
-        """Total MACs for the fit() call."""
-
-    @abstractmethod
     def inference_flops(self) -> int:
         """FLOPs to score a single sample."""
 
@@ -150,20 +142,6 @@ class AutoencoderAdapter(Adapter):
         with torch.no_grad():
             recon = self._model(x)
             return torch.mean((x - recon) ** 2, dim=1).cpu().numpy()
-
-    def inference_macs(self) -> int:
-        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        linear = D*H + H*L + L*H + H*D
-        mse = D  # subtract, square, accumulate
-        return linear + mse
-
-    def training_macs(self) -> int:
-        D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
-        n_train = self._fitted_train_n()
-        F = D*H + H*L + L*H + H*D          # forward linear MACs
-        P = (D+1)*H + (H+1)*L + (L+1)*H + (H+1)*D  # parameters (w+b)
-        per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
-        return self.epochs * per_epoch
 
     def inference_flops(self) -> int:
         D, H, L = self.input_dim, self.hidden_dim, self.latent_dim
@@ -267,20 +245,6 @@ class SmallAEAdapter(Adapter):
             recon = self._model(x)
             return torch.mean((x - recon) ** 2, dim=1).cpu().numpy()
 
-    def inference_macs(self) -> int:
-        D, L = self.input_dim, self.latent_dim
-        linear = D*L + L*D  # encoder + decoder
-        mse = D
-        return linear + mse
-
-    def training_macs(self) -> int:
-        D, L = self.input_dim, self.latent_dim
-        n_train = self._fitted_train_n()
-        F = D*L + L*D                      # forward linear MACs
-        P = (D+1)*L + (L+1)*D              # parameters (w+b)
-        per_epoch = n_train * (3*F + 2*D) + math.ceil(n_train / self.batch_size) * 5 * P
-        return self.epochs * per_epoch
-
     def inference_flops(self) -> int:
         D, L = self.input_dim, self.latent_dim
         # Linear layers: 2 FLOPs per MAC
@@ -334,28 +298,6 @@ class GMMAdapter(Adapter):
     def score(self, emb: np.ndarray) -> np.ndarray:
         # Negative log-likelihood: higher = more anomalous
         return -self._gmm.score_samples(emb)
-
-    def inference_macs(self) -> int:
-        D = self._gmm.means_.shape[1]
-        K = self.n_components
-        if self.covariance_type == "spherical":
-            return K * D  # dot product for squared norm
-        if self.covariance_type == "diag":
-            return K * D  # weighted accumulation: prec_i * delta_i^2 summed
-        return K * D**2  # dense precision mat-vec
-
-    def training_macs(self) -> int:
-        D = self._gmm.means_.shape[1]
-        K = self.n_components
-        n_train = self._fitted_train_n()
-        I = self._gmm.n_iter_
-        if self.covariance_type == "spherical":
-            per_iter = n_train * K * (2 * D + 2)  # E-step (D+1) + M-step (D+1)
-        elif self.covariance_type == "diag":
-            per_iter = n_train * K * 4 * D  # E-step (2D) + M-step (2D)
-        else:
-            per_iter = n_train * K * (2 * D**2 + 2 * D)
-        return I * per_iter
 
     def inference_flops(self) -> int:
         """FLOPs to compute -log p(x) under a K-component GMM.
@@ -466,14 +408,6 @@ class PrototypeAdapter(Adapter):
     def score(self, emb: np.ndarray) -> np.ndarray:
         return np.linalg.norm(emb - self._prototype, axis=1)
 
-    def inference_macs(self) -> int:
-        # D subtracts + D MACs for squared accumulation
-        return 2 * self._dim
-
-    def training_macs(self) -> int:
-        # Sum of train_n D-vectors
-        return self._fitted_train_n() * self._dim
-
     def inference_flops(self) -> int:
         # D sub + D mul + (D-1) add + 1 sqrt
         return 3 * self._dim
@@ -508,14 +442,6 @@ class CosineAdapter(Adapter):
         cos_sim = dots / (norms * self._proto_norm + 1e-12)
         return 1.0 - cos_sim
 
-    def inference_macs(self) -> int:
-        # dot(z, prototype): D MACs;  ||z||^2: D MACs;  ||p|| precomputed
-        return 2 * self._dim
-
-    def training_macs(self) -> int:
-        # Sum of train_n D-vectors + ||prototype||^2
-        return self._fitted_train_n() * self._dim + self._dim
-
     def inference_flops(self) -> int:
         # dot: 2D-1; norm-squared: 2D-1; sqrt: 1; norms*proto_norm: 1; div: 1; 1 - cos: 1
         return 4 * self._dim + 3
@@ -549,14 +475,6 @@ class KNNAdapter(Adapter):
         # Distance to k-th nearest neighbor (higher = more anomalous)
         distances, _ = self._nn.kneighbors(emb)
         return distances[:, -1]
-
-    def inference_macs(self) -> int:
-        D = self._nn._fit_X.shape[1]
-        n_stored = self._nn._fit_X.shape[0]
-        return n_stored * 2 * D  # euclidean distance to all stored points
-
-    def training_macs(self) -> int:
-        return 0  # KNN just stores the data
 
     def inference_flops(self) -> int:
         if self.metric != "euclidean":
