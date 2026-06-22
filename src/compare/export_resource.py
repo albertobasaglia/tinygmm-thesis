@@ -67,7 +67,7 @@ def _adapter_specs(D: int):
     return [
         ("GMM K=1 diag", lambda n: GMMAdapter(n_components=1, covariance_type="diag", train_n=n, seed=0)),
         ("GMM K=1 full", lambda n: GMMAdapter(n_components=1, covariance_type="full", train_n=n, seed=0)),
-        ("kNN k=5",      lambda n: KNNAdapter(k=5, train_n=n)),
+        ("kNN k=1",      lambda n: KNNAdapter(k=1, train_n=n)),
         # epochs=100 matches the selected AE config in configs/frozen.py, so the
         # enrollment-FLOPs column reflects the real fit cost (inference FLOPs and
         # parameter count do not depend on epochs).
