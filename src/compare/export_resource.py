@@ -185,7 +185,9 @@ def fig_enroll_bar(D: int, train_n: int, out_dir: Path):
     fig, ax = plt.subplots()
     bars = ax.bar(labels, heights, color=[colors.color_for_label(l) for l in labels])
     ax.set_yscale("log")
-    ax.set_ylim(bottom=floor)
+    # Headroom above the tallest bar so its value label clears the title. The
+    # axis is logarithmic, so the factor is multiplicative (~0.6 of a decade).
+    ax.set_ylim(bottom=floor, top=max(heights) * 4)
     ax.bar_label(bars, labels=bar_labels)
     ax.set_ylabel("Enrollment FLOPs (one-time)")
     ax.set_title(f"Enrollment cost (train_n={train_n})")
