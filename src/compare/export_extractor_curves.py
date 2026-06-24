@@ -1,9 +1,10 @@
 """
 Export feature-extractor training curves (train/val loss and accuracy) to PDF.
 
-Reads the Lightning CSVLogger metrics written during extractor training under
-logs/<name>/version_*/metrics.csv and emits one two-panel figure per extractor
-(loss vs epoch, accuracy vs epoch) for the thesis appendix.
+Reads the checkpoint-side metrics copied under checkpoints/<key>/misc/metrics.csv
+and emits one figure per metric for the thesis appendix. The checkpoint copies are
+the authoritative records for the submitted experiments; use --source logs only
+for ad hoc inspection of raw Lightning CSVLogger directories.
 
 Usage:
     python -m src.compare.export_extractor_curves [--out tinygmm-tex/figures/extractor]
@@ -43,12 +44,17 @@ EXTRACTORS = [
 ]
 
 
-def _per_epoch(log_dir: Path) -> pd.DataFrame:
-    """Collapse the interleaved CSV to one row per epoch (NaN-skipping mean)."""
+def _latest_log_metrics(log_dir: Path) -> Path:
     versions = sorted(log_dir.glob("version_*"))
     if not versions:
         raise FileNotFoundError(f"no version_* under {log_dir}")
-    csv = versions[-1] / "metrics.csv"
+    return versions[-1] / "metrics.csv"
+
+
+def _per_epoch(csv: Path) -> pd.DataFrame:
+    """Collapse the interleaved CSV to one row per epoch (NaN-skipping mean)."""
+    if not csv.exists():
+        raise FileNotFoundError(csv)
     df = pd.read_csv(csv)
     cols = [c for c in ("train_loss", "val_loss", "train_acc", "val_acc") if c in df.columns]
     return df.groupby("epoch")[cols].mean().sort_index()
@@ -83,14 +89,22 @@ def main():
     parser = argparse.ArgumentParser(prog="python -m src.compare.export_extractor_curves")
     parser.add_argument("--out", type=Path, default=ROOT / "tinygmm-tex" / "figures" / "extractor",
                         help="Output directory for the training-curve PDFs.")
+    parser.add_argument("--source", choices=("checkpoints", "logs"), default="checkpoints",
+                        help="Use checkpoint-side metrics by default; logs selects latest version_*.")
+    parser.add_argument("--checkpoints", type=Path, default=ROOT / "checkpoints",
+                        help="Checkpoint root containing <key>/misc/metrics.csv.")
     parser.add_argument("--logs", type=Path, default=ROOT / "logs",
                         help="Lightning logs root containing <name>/version_*/metrics.csv.")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
     for key, log_name, display in EXTRACTORS:
-        curves = _per_epoch(args.logs / log_name)
-        print(f"{display}: {len(curves)} epochs from {args.logs / log_name}")
+        if args.source == "checkpoints":
+            csv = args.checkpoints / key / "misc" / "metrics.csv"
+        else:
+            csv = _latest_log_metrics(args.logs / log_name)
+        curves = _per_epoch(csv)
+        print(f"{display}: {len(curves)} epochs from {csv}")
         _plot(curves, key, args.out)
     print("Done.")
 
