@@ -155,7 +155,7 @@ def fig_bar(D: int, train_n: int, out_dir: Path):
     bars = ax.bar(labels, flops, color=[colors.color_for_label(l) for l in labels])
     ax.bar_label(bars, fmt="%.0f")
     # Headroom above the tallest bar so its value label clears the title.
-    ax.set_ylim(top=max(flops) * 1.15)
+    ax.set_ylim(top=max(flops) * 1.18)
     ax.set_ylabel("Inference FLOPs")
     ax.set_title(f"Inference cost per sample (train_n={train_n})")
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
@@ -185,9 +185,9 @@ def fig_enroll_bar(D: int, train_n: int, out_dir: Path):
     fig, ax = plt.subplots()
     bars = ax.bar(labels, heights, color=[colors.color_for_label(l) for l in labels])
     ax.set_yscale("log")
-    # Headroom above the tallest bar so its value label clears the title. The
-    # axis is logarithmic, so the factor is multiplicative (~0.6 of a decade).
-    ax.set_ylim(bottom=floor, top=max(heights) * 4)
+    # Headroom above the tallest bar so its value label does not collide with the
+    # title (the autoencoder's count is ~7 orders of magnitude above the floor).
+    ax.set_ylim(bottom=floor, top=max(heights) * 6)
     ax.bar_label(bars, labels=bar_labels)
     ax.set_ylabel("Enrollment FLOPs (one-time)")
     ax.set_title(f"Enrollment cost (train_n={train_n})")

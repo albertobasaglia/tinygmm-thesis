@@ -608,7 +608,7 @@ def _pareto_families_figure(labels, xs, ys, point_colors, out_dir: Path, name: s
 
 
 def section_tables(df: pd.DataFrame, tables_dir: Path, dataset: str):
-    """Emit the per-dataset booktabs tables (compare, gmm_ablation).
+    """Emit the per-dataset booktabs tables (gmm_ablation).
 
     Filenames are namespaced by dataset so the three datasets do not overwrite
     each other. Score cells report mean $\\pm$ 95% CI across the
@@ -619,7 +619,6 @@ def section_tables(df: pd.DataFrame, tables_dir: Path, dataset: str):
     tables_dir.mkdir(parents=True, exist_ok=True)
     sub = df[df["p_train_n"] == FIXED_TRAIN_N]
 
-    _table_compare(sub, tables_dir, dataset)
     _table_gmm_ablation(sub, tables_dir, dataset)
 
 
@@ -648,39 +647,6 @@ def _table_with_ci(caption: str, label: str, tabular: str, ci_pdf: str,
         "  \\end{minipage}",
         "\\end{table}",
     ])
-
-
-def _table_compare(sub: pd.DataFrame, tables_dir: Path, dataset: str):
-    """Best-of-each adapter rows, ACC@FAR=5% (primary) + EER (secondary),
-    shown beside the validation CI chart of the same train_n=50 numbers."""
-    present = [(label, _filter(sub, where)) for label, where in BEST_LINES]
-    present = [(label, s) for label, s in present if not s.empty]
-    metrics = ["m_acc_at_far5", "m_eer"]
-    best = _best_rows([s for _, s in present], metrics)
-    rows = []
-    for i, (label, s) in enumerate(present):
-        cells = " & ".join(_cell(s[m], bold=best.get(m) == i) for m in metrics)
-        rows.append(f"      {label} & {cells} \\\\")
-    tabular = "\n".join([
-        "    \\begin{tabular}{lrr}",
-        "      \\toprule",
-        "      Adaptive layer & ACC@FAR=5\\% & EER \\\\",
-        "      \\midrule",
-        "\n".join(rows),
-        "      \\bottomrule",
-        "    \\end{tabular}",
-    ])
-    caption = (f"Adaptive-layer comparison on {_pretty_dataset(dataset)} at"
-               f" \\texttt{{train\\_n}}={FIXED_TRAIN_N} (mean $\\pm$ 95\\% CI across"
-               " target classes $\\times$ trials). ACC@FAR=5\\% is the headline"
-               " metric (higher is better); EER is shown for reference (lower is"
-               " better). The best value in each column is in bold. The same"
-               " ACC@FAR=5\\% values are drawn as 95\\% confidence intervals at right.")
-    tex = _table_with_ci(caption, f"tab:compare_{dataset}", tabular,
-                         f"figures/{dataset}/ci_acc_at_far5.pdf")
-    path = tables_dir / f"compare_{dataset}.tex"
-    path.write_text(tex + "\n")
-    print(f"  saved {path}")
 
 
 def _table_gmm_ablation(sub: pd.DataFrame, tables_dir: Path, dataset: str):
@@ -833,7 +799,7 @@ def section_final_test(test_parquet_path: Path | None, out_dir: Path,
         agg_tn = (sub.groupby("p_train_n")["m_acc_at_far5"]
                   .agg(["mean", "std", "count"]).reset_index().sort_values("p_train_n"))
         ci = 1.96 * agg_tn["std"] / np.sqrt(agg_tn["count"])
-        ax.plot(agg_tn["p_train_n"], agg_tn["mean"], marker="o",
+        ax.plot(agg_tn["p_train_n"], agg_tn["mean"],
                 label=label, color=color)
         ax.fill_between(agg_tn["p_train_n"],
                         agg_tn["mean"] - ci, agg_tn["mean"] + ci,
